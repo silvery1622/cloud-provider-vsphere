@@ -93,11 +93,12 @@ func GetVmopClient(config *rest.Config) (vmop.Interface, error) {
 }
 
 // NewVMService creates a vmService object
-func NewVMService(vmClient vmop.Interface, ns string, ownerRef *metav1.OwnerReference) VMService {
+func NewVMService(vmClient vmop.Interface, ns string, ownerRef *metav1.OwnerReference, svcAnnoPropEnabled bool) VMService {
 	return &vmService{
-		vmClient:       vmClient,
-		namespace:      ns,
-		ownerReference: ownerRef,
+		vmClient:           vmClient,
+		namespace:          ns,
+		ownerReference:     ownerRef,
+		svcAnnoPropEnabled: svcAnnoPropEnabled,
 	}
 }
 
@@ -226,7 +227,7 @@ func (s *vmService) Update(ctx context.Context, service *v1.Service, clusterName
 		service.Spec.LoadBalancerSourceRanges = []string{}
 	}
 
-	annotations := getVMServiceAnnotations(vmService, service)
+	annotations := getVMServiceAnnotations(vmService, service, s.svcAnnoPropEnabled)
 
 	// VMService only has a few fields to be kept in sync so we will simply
 	// iterate over them
@@ -342,14 +343,14 @@ func (s *vmService) lbServiceToVMService(service *v1.Service, clusterName string
 		Spec: vmServiceSpec,
 	}
 
-	if annotations := getVMServiceAnnotations(vmService, service); len(annotations) != 0 {
+	if annotations := getVMServiceAnnotations(vmService, service, s.svcAnnoPropEnabled); len(annotations) != 0 {
 		vmService.Annotations = annotations
 	}
 
 	return vmService, nil
 }
 
-func getVMServiceAnnotations(vmService *vmopv1.VirtualMachineService, service *v1.Service) map[string]string {
+func getVMServiceAnnotations(vmService *vmopv1.VirtualMachineService, service *v1.Service, svcAnnoPropEnabled bool) map[string]string {
 	var annotations map[string]string
 	// When ExternalTrafficPolicy is set to Local in the Service, add its
 	// value and the healthCheckNodePort to VirtualMachineService
@@ -362,6 +363,20 @@ func getVMServiceAnnotations(vmService *vmopv1.VirtualMachineService, service *v
 		annotations[AnnotationServiceExternalTrafficPolicyKey] = string(service.Spec.ExternalTrafficPolicy)
 		annotations[AnnotationServiceHealthCheckNodePortKey] = strconv.Itoa(int(service.Spec.HealthCheckNodePort))
 	}
+	// Annotation propagation logic
+	if svcAnnoPropEnabled {
+		// Initialize annotations map if empty
+		if annotations == nil {
+			annotations = make(map[string]string)
+		}
+		// Merge service annotations with priority to existing VMService annotations
+		for k, v := range service.Annotations {
+			if _, exists := annotations[k]; !exists {
+				annotations[k] = v
+			}
+		}
+	}
+
 	return annotations
 }
 

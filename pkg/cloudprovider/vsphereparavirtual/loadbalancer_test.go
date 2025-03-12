@@ -52,6 +52,7 @@ var (
 		Name:       testClustername,
 		UID:        "1bbf49a7-fbce-4502-bb4c-4c3544cacc9e",
 	}
+	testSvcAnnoPropEnabled = false
 )
 
 func newTestLoadBalancer() (cloudprovider.LoadBalancer, *dynamicfake.FakeDynamicClient) {
@@ -60,7 +61,7 @@ func newTestLoadBalancer() (cloudprovider.LoadBalancer, *dynamicfake.FakeDynamic
 	fc := dynamicfake.NewSimpleDynamicClient(scheme)
 	fcw := vmopclient.NewFakeClientSet(fc)
 
-	vms := vmservice.NewVMService(fcw, testClusterNameSpace, &testOwnerReference)
+	vms := vmservice.NewVMService(fcw, testClusterNameSpace, &testOwnerReference, testSvcAnnoPropEnabled)
 	return &loadBalancer{vmService: vms}, fc
 }
 
@@ -79,7 +80,7 @@ func TestNewLoadBalancer(t *testing.T) {
 
 	for _, testCase := range testCases {
 		t.Run(testCase.name, func(t *testing.T) {
-			_, err := NewLoadBalancer(testClusterNameSpace, testCase.config, &testOwnerReference)
+			_, err := NewLoadBalancer(testClusterNameSpace, testCase.config, &testOwnerReference, testSvcAnnoPropEnabled)
 			assert.Equal(t, testCase.err, err)
 		})
 	}
@@ -189,39 +190,186 @@ func TestUpdateLoadBalancer(t *testing.T) {
 		})
 	}
 }
-
-func TestEnsureLoadBalancer_VMServiceExternalTrafficPolicyLocal(t *testing.T) {
-	lb, fc := newTestLoadBalancer()
-	testK8sService := &v1.Service{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      testK8sServiceName,
-			Namespace: testK8sServiceNameSpace,
+func TestEnsureLoadBalancer_AnnotationPropagation(t *testing.T) {
+	testCases := []struct {
+		name                string
+		svcAnnoPropEnabled  bool
+		serviceAnnotations  map[string]string
+		expectedAnnotations map[string]string
+	}{
+		{
+			name:               "propagation enabled with annotations",
+			svcAnnoPropEnabled: true,
+			serviceAnnotations: map[string]string{
+				"key1": "value1",
+				"key2": "value2",
+			},
+			expectedAnnotations: map[string]string{
+				vmservice.AnnotationServiceExternalTrafficPolicyKey: string(v1.ServiceExternalTrafficPolicyTypeLocal),
+				vmservice.AnnotationServiceHealthCheckNodePortKey:   "12345",
+				"key1": "value1",
+				"key2": "value2",
+			},
 		},
-		Spec: v1.ServiceSpec{
-			ExternalTrafficPolicy: v1.ServiceExternalTrafficPolicyTypeLocal,
+		{
+			name:               "propagation enabled with conflict",
+			svcAnnoPropEnabled: true,
+			serviceAnnotations: map[string]string{
+				vmservice.AnnotationServiceExternalTrafficPolicyKey: "invalid-value",
+				"valid-key": "valid-value",
+			},
+			expectedAnnotations: map[string]string{
+				vmservice.AnnotationServiceExternalTrafficPolicyKey: string(v1.ServiceExternalTrafficPolicyTypeLocal),
+				vmservice.AnnotationServiceHealthCheckNodePortKey:   "12345",
+				"valid-key": "valid-value",
+			},
+		},
+		{
+			name:               "propagation disabled",
+			svcAnnoPropEnabled: false,
+			serviceAnnotations: map[string]string{
+				"key1": "value1",
+			},
+			expectedAnnotations: map[string]string{
+				vmservice.AnnotationServiceExternalTrafficPolicyKey: string(v1.ServiceExternalTrafficPolicyTypeLocal),
+				vmservice.AnnotationServiceHealthCheckNodePortKey:   "12345",
+			},
 		},
 	}
 
-	fc.PrependReactor("create", "virtualmachineservices", func(action clientgotesting.Action) (handled bool, ret runtime.Object, err error) {
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Set global flag and reset after test
+			testSvcAnnoPropEnabled = tc.svcAnnoPropEnabled
+			defer func() { testSvcAnnoPropEnabled = false }()
+
+			lb, fc := newTestLoadBalancer()
+			testK8sService := &v1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:        testK8sServiceName,
+					Namespace:   testK8sServiceNameSpace,
+					Annotations: tc.serviceAnnotations,
+				},
+				Spec: v1.ServiceSpec{
+					ExternalTrafficPolicy: v1.ServiceExternalTrafficPolicyTypeLocal,
+					HealthCheckNodePort:   12345,
+				},
+			}
+
+			var createdVMService *vmopv1.VirtualMachineService
+			fc.PrependReactor("create", "virtualmachineservices", func(action clientgotesting.Action) (handled bool, ret runtime.Object, err error) {
+				createAction := action.(clientgotesting.CreateAction)
+				unstructuredObj := createAction.GetObject().(*unstructured.Unstructured)
+				createdVMService = &vmopv1.VirtualMachineService{}
+				err = runtime.DefaultUnstructuredConverter.FromUnstructured(unstructuredObj.UnstructuredContent(), createdVMService)
+				assert.NoError(t, err)
+
+				// Add status for successful creation
+				createdVMService.Status = vmopv1.VirtualMachineServiceStatus{
+					LoadBalancer: vmopv1.LoadBalancerStatus{
+						Ingress: []vmopv1.LoadBalancerIngress{{IP: "10.10.10.10"}},
+					},
+				}
+				return true, createdVMService, nil
+			})
+
+			_, err := lb.EnsureLoadBalancer(context.Background(), testClustername, testK8sService, []*v1.Node{})
+			assert.NoError(t, err)
+
+			// Verify annotations match expectations
+			assert.Equal(t, tc.expectedAnnotations, createdVMService.Annotations, "Mismatch in annotations for case: %s", tc.name)
+		})
+	}
+}
+func TestEnsureLoadBalancer_VMServiceExternalTrafficPolicyLocal(t *testing.T) {
+	// Helper function to create a test service
+	createTestService := func(annotations map[string]string) *v1.Service {
+		return &v1.Service{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:        testK8sServiceName,
+				Namespace:   testK8sServiceNameSpace,
+				Annotations: annotations,
+			},
+			Spec: v1.ServiceSpec{
+				ExternalTrafficPolicy: v1.ServiceExternalTrafficPolicyTypeLocal,
+				HealthCheckNodePort:   12345,
+			},
+		}
+	}
+
+	// Helper function to create a mock VMService
+	createMockVMService := func() *unstructured.Unstructured {
 		unstructuredObj, _ := runtime.DefaultUnstructuredConverter.ToUnstructured(&vmopv1.VirtualMachineService{
 			Status: vmopv1.VirtualMachineServiceStatus{
 				LoadBalancer: vmopv1.LoadBalancerStatus{
 					Ingress: []vmopv1.LoadBalancerIngress{
-						{
-							IP: "10.10.10.10",
-						},
+						{IP: "10.10.10.10"},
 					},
 				},
 			},
 		})
-		return true, &unstructured.Unstructured{Object: unstructuredObj}, nil
-	})
+		return &unstructured.Unstructured{Object: unstructuredObj}
+	}
 
-	_, ensureErr := lb.EnsureLoadBalancer(context.Background(), testClustername, testK8sService, []*v1.Node{})
-	assert.NoError(t, ensureErr)
+	// Test cases
+	testCases := []struct {
+		name                string
+		svcAnnoPropEnabled  bool
+		annotations         map[string]string
+		expectedAnnotations map[string]string
+	}{
+		{
+			name:               "external traffic policy with annotation propagation disabled",
+			svcAnnoPropEnabled: false,
+			annotations: map[string]string{
+				"should-not-appear": "test-value",
+			},
+			expectedAnnotations: map[string]string{
+				vmservice.AnnotationServiceExternalTrafficPolicyKey: string(v1.ServiceExternalTrafficPolicyTypeLocal),
+				vmservice.AnnotationServiceHealthCheckNodePortKey:   "12345",
+			},
+		},
+		{
+			name:               "external traffic policy with annotation propagation enabled",
+			svcAnnoPropEnabled: true,
+			annotations: map[string]string{
+				"test-annotation":        "test-value",
+				"conflicting-annotation": "should-be-overridden",
+			},
+			expectedAnnotations: map[string]string{
+				vmservice.AnnotationServiceExternalTrafficPolicyKey: string(v1.ServiceExternalTrafficPolicyTypeLocal),
+				vmservice.AnnotationServiceHealthCheckNodePortKey:   "12345",
+				"test-annotation": "test-value",
+			},
+		},
+	}
 
-	err := lb.EnsureLoadBalancerDeleted(context.Background(), testClustername, testK8sService)
-	assert.NoError(t, err)
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Set global flag and reset after test
+			testSvcAnnoPropEnabled = tc.svcAnnoPropEnabled
+			defer func() { testSvcAnnoPropEnabled = false }()
+
+			lb, fc := newTestLoadBalancer()
+			testK8sService := createTestService(tc.annotations)
+
+			// Mock VMService creation
+			fc.PrependReactor("create", "virtualmachineservices", func(action clientgotesting.Action) (handled bool, ret runtime.Object, err error) {
+				return true, createMockVMService(), nil
+			})
+
+			// Ensure load balancer
+			_, ensureErr := lb.EnsureLoadBalancer(context.Background(), testClustername, testK8sService, []*v1.Node{})
+			assert.NoError(t, ensureErr)
+
+			// Verify annotations
+			vmServiceList, _ := fc.Resource(vmopv1.SchemeGroupVersion.WithResource("virtualmachineservices")).List(context.Background(), metav1.ListOptions{})
+			vmService := &vmopv1.VirtualMachineService{}
+			_ = runtime.DefaultUnstructuredConverter.FromUnstructured(vmServiceList.Items[0].Object, vmService)
+
+			assert.Equal(t, tc.expectedAnnotations, vmService.Annotations)
+		})
+	}
 }
 
 func TestEnsureLoadBalancer(t *testing.T) {

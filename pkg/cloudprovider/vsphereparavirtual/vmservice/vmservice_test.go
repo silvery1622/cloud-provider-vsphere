@@ -50,8 +50,9 @@ var (
 		Name:       testClustername,
 		UID:        "1bbf49a7-fbce-4502-bb4c-4c3544cacc9e",
 	}
-	vms      VMService
-	fakeLBIP = "1.1.1.1"
+	testSvcAnnoPropEnabled = false
+	vms                    VMService
+	fakeLBIP               = "1.1.1.1"
 )
 
 func initTest() (*v1.Service, VMService, *dynamicfake.FakeDynamicClient) {
@@ -79,7 +80,7 @@ func initTest() (*v1.Service, VMService, *dynamicfake.FakeDynamicClient) {
 	scheme := runtime.NewScheme()
 	_ = vmopv1.AddToScheme(scheme)
 	fc := dynamicfake.NewSimpleDynamicClient(scheme)
-	vms = NewVMService(vmopclient.NewFakeClientSet(fc), testClusterNameSpace, &testOwnerReference)
+	vms = NewVMService(vmopclient.NewFakeClientSet(fc), testClusterNameSpace, &testOwnerReference, testSvcAnnoPropEnabled)
 	return testK8sService, vms, fc
 }
 
@@ -102,7 +103,7 @@ func TestNewVMService(t *testing.T) {
 			assert.NoError(t, err)
 			assert.NotEqual(t, client, nil)
 
-			realVms := NewVMService(client, testClusterNameSpace, &testOwnerReference)
+			realVms := NewVMService(client, testClusterNameSpace, &testOwnerReference, testSvcAnnoPropEnabled)
 			assert.NotEqual(t, realVms, nil)
 		})
 	}
@@ -325,9 +326,14 @@ func TestCreateVMService_ExternalTrafficPolicyTypeLocal(t *testing.T) {
 	testK8sService, vms, _ := initTest()
 	testK8sService.Spec.ExternalTrafficPolicy = v1.ServiceExternalTrafficPolicyTypeLocal
 	testK8sService.Spec.HealthCheckNodePort = 30012
+	testK8sService.Annotations = map[string]string{
+		"test-annotation": "test-value",
+	}
+
 	vmServiceObj, err := vms.Create(context.Background(), testK8sService, testClustername)
 	assert.NoError(t, err)
 
+	// Verify traffic policy annotations
 	v, ok := vmServiceObj.Annotations[AnnotationServiceExternalTrafficPolicyKey]
 	assert.Equal(t, ok, true)
 	assert.Equal(t, v, string(v1.ServiceExternalTrafficPolicyTypeLocal))
@@ -335,6 +341,14 @@ func TestCreateVMService_ExternalTrafficPolicyTypeLocal(t *testing.T) {
 	hcPort, ok := vmServiceObj.Annotations[AnnotationServiceHealthCheckNodePortKey]
 	assert.Equal(t, ok, true)
 	assert.Equal(t, hcPort, strconv.Itoa(30012))
+
+	// Verify propagated annotations (if enabled)
+	if testSvcAnnoPropEnabled {
+		assert.Equal(t, "test-value", vmServiceObj.Annotations["test-annotation"])
+	} else {
+		_, ok := vmServiceObj.Annotations["test-annotation"]
+		assert.Equal(t, ok, false)
+	}
 
 	testK8sService.Spec.ExternalTrafficPolicy = ""
 	err = vms.Delete(context.Background(), testK8sService, testClustername)
@@ -678,5 +692,118 @@ func TestDeleteVMService(t *testing.T) {
 	testK8sService, vms, _ := initTest()
 	_, _ = vms.Create(context.Background(), testK8sService, testClustername)
 	err := vms.Delete(context.Background(), testK8sService, testClustername)
+	assert.NoError(t, err)
+}
+
+func TestGetVMServiceAnnotations(t *testing.T) {
+	testCases := []struct {
+		name                string
+		svcAnnoPropEnabled  bool
+		serviceAnnotations  map[string]string
+		expectedAnnotations map[string]string
+	}{
+		{
+			name:               "annotation propagation enabled without service annotations",
+			svcAnnoPropEnabled: false,
+			serviceAnnotations: map[string]string{
+				"key1": "value1",
+				"key2": "value2",
+			},
+			expectedAnnotations: map[string]string{
+				"virtualmachineservice.vmoperator.vmware.com/service.externalTrafficPolicy": "Local",
+				"virtualmachineservice.vmoperator.vmware.com/service.healthCheckNodePort":   "12345",
+			},
+		},
+		{
+			name:               "annotation propagation enabled with service annotations",
+			svcAnnoPropEnabled: true,
+			serviceAnnotations: map[string]string{
+				"key1": "value1",
+				"key2": "value2",
+			},
+			expectedAnnotations: map[string]string{
+				"key1": "value1",
+				"key2": "value2",
+				"virtualmachineservice.vmoperator.vmware.com/service.externalTrafficPolicy": "Local",
+				"virtualmachineservice.vmoperator.vmware.com/service.healthCheckNodePort":   "12345",
+			},
+		},
+		{
+			name:               "annotation propagation enabled with conflicting keys",
+			svcAnnoPropEnabled: true,
+			serviceAnnotations: map[string]string{
+				AnnotationServiceExternalTrafficPolicyKey: "conflict-value",
+				"key2": "value2",
+			},
+			expectedAnnotations: map[string]string{
+				AnnotationServiceExternalTrafficPolicyKey: string(v1.ServiceExternalTrafficPolicyTypeLocal),
+				"key2": "value2",
+				"virtualmachineservice.vmoperator.vmware.com/service.healthCheckNodePort": "12345",
+			},
+		},
+		{
+			name:               "annotation propagation disabled",
+			svcAnnoPropEnabled: false,
+			serviceAnnotations: map[string]string{
+				"key1": "value1",
+			},
+			expectedAnnotations: map[string]string{
+				AnnotationServiceExternalTrafficPolicyKey: string(v1.ServiceExternalTrafficPolicyTypeLocal),
+				AnnotationServiceHealthCheckNodePortKey:   "12345",
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Set global flag and reset after test
+			testSvcAnnoPropEnabled = tc.svcAnnoPropEnabled
+			defer func() { testSvcAnnoPropEnabled = false }()
+
+			// Create a test service with annotations
+			testK8sService := &v1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:        testK8sServiceName,
+					Namespace:   testK8sServiceNameSpace,
+					Annotations: tc.serviceAnnotations,
+				},
+				Spec: v1.ServiceSpec{
+					ExternalTrafficPolicy: v1.ServiceExternalTrafficPolicyTypeLocal,
+					HealthCheckNodePort:   12345,
+				},
+			}
+
+			// Call the function under test
+			annotations := getVMServiceAnnotations(nil, testK8sService, tc.svcAnnoPropEnabled)
+
+			// Verify the annotations match expectations
+			assert.Equal(t, tc.expectedAnnotations, annotations)
+		})
+	}
+}
+
+func TestUpdateVMService_AnnotationPropagation(t *testing.T) {
+	testK8sService, vms, _ := initTest()
+	oldK8sService := testK8sService.DeepCopy()
+	testK8sService.Annotations = map[string]string{
+		"new-annotation": "new-value",
+	}
+
+	// Create an old VMService
+	createdVMService, _ := vms.Create(context.Background(), oldK8sService, testClustername)
+
+	// Update the VMService with new annotations
+	vmServiceObj, err := vms.Update(context.Background(), testK8sService, testClustername, createdVMService)
+	assert.NoError(t, err)
+
+	// Verify propagated annotations (if enabled)
+	if testSvcAnnoPropEnabled {
+		assert.Equal(t, "new-value", vmServiceObj.Annotations["new-annotation"])
+	} else {
+		_, ok := vmServiceObj.Annotations["new-annotation"]
+		assert.Equal(t, ok, false)
+	}
+
+	err = vms.Delete(context.Background(), testK8sService, testClustername)
 	assert.NoError(t, err)
 }
