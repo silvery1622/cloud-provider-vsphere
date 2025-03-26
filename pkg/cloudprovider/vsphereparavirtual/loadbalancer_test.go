@@ -52,7 +52,7 @@ var (
 		Name:       testClustername,
 		UID:        "1bbf49a7-fbce-4502-bb4c-4c3544cacc9e",
 	}
-	testSvcAnnoPropEnabled = false
+	testServiceAnnotationPropagationEnabled = false
 )
 
 func newTestLoadBalancer() (cloudprovider.LoadBalancer, *dynamicfake.FakeDynamicClient) {
@@ -61,7 +61,7 @@ func newTestLoadBalancer() (cloudprovider.LoadBalancer, *dynamicfake.FakeDynamic
 	fc := dynamicfake.NewSimpleDynamicClient(scheme)
 	fcw := vmopclient.NewFakeClientSet(fc)
 
-	vms := vmservice.NewVMService(fcw, testClusterNameSpace, &testOwnerReference, testSvcAnnoPropEnabled)
+	vms := vmservice.NewVMService(fcw, testClusterNameSpace, &testOwnerReference, testServiceAnnotationPropagationEnabled)
 	return &loadBalancer{vmService: vms}, fc
 }
 
@@ -80,7 +80,7 @@ func TestNewLoadBalancer(t *testing.T) {
 
 	for _, testCase := range testCases {
 		t.Run(testCase.name, func(t *testing.T) {
-			_, err := NewLoadBalancer(testClusterNameSpace, testCase.config, &testOwnerReference, testSvcAnnoPropEnabled)
+			_, err := NewLoadBalancer(testClusterNameSpace, testCase.config, &testOwnerReference, testServiceAnnotationPropagationEnabled)
 			assert.Equal(t, testCase.err, err)
 		})
 	}
@@ -192,14 +192,14 @@ func TestUpdateLoadBalancer(t *testing.T) {
 }
 func TestEnsureLoadBalancer_AnnotationPropagation(t *testing.T) {
 	testCases := []struct {
-		name                string
-		svcAnnoPropEnabled  bool
-		serviceAnnotations  map[string]string
-		expectedAnnotations map[string]string
+		name                                string
+		serviceAnnotationPropagationEnabled bool
+		serviceAnnotations                  map[string]string
+		expectedAnnotations                 map[string]string
 	}{
 		{
-			name:               "propagation enabled with annotations",
-			svcAnnoPropEnabled: true,
+			name:                                "propagation enabled with annotations",
+			serviceAnnotationPropagationEnabled: true,
 			serviceAnnotations: map[string]string{
 				"key1": "value1",
 				"key2": "value2",
@@ -212,8 +212,8 @@ func TestEnsureLoadBalancer_AnnotationPropagation(t *testing.T) {
 			},
 		},
 		{
-			name:               "propagation enabled with conflict",
-			svcAnnoPropEnabled: true,
+			name:                                "propagation enabled with conflict",
+			serviceAnnotationPropagationEnabled: true,
 			serviceAnnotations: map[string]string{
 				vmservice.AnnotationServiceExternalTrafficPolicyKey: "invalid-value",
 				"valid-key": "valid-value",
@@ -225,8 +225,8 @@ func TestEnsureLoadBalancer_AnnotationPropagation(t *testing.T) {
 			},
 		},
 		{
-			name:               "propagation disabled",
-			svcAnnoPropEnabled: false,
+			name:                                "propagation disabled",
+			serviceAnnotationPropagationEnabled: false,
 			serviceAnnotations: map[string]string{
 				"key1": "value1",
 			},
@@ -240,8 +240,8 @@ func TestEnsureLoadBalancer_AnnotationPropagation(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			// Set global flag and reset after test
-			testSvcAnnoPropEnabled = tc.svcAnnoPropEnabled
-			defer func() { testSvcAnnoPropEnabled = false }()
+			testServiceAnnotationPropagationEnabled = tc.serviceAnnotationPropagationEnabled
+			defer func() { testServiceAnnotationPropagationEnabled = false }()
 
 			lb, fc := newTestLoadBalancer()
 			testK8sService := &v1.Service{
@@ -313,14 +313,14 @@ func TestEnsureLoadBalancer_VMServiceExternalTrafficPolicyLocal(t *testing.T) {
 
 	// Test cases
 	testCases := []struct {
-		name                string
-		svcAnnoPropEnabled  bool
-		annotations         map[string]string
-		expectedAnnotations map[string]string
+		name                                string
+		serviceAnnotationPropagationEnabled bool
+		annotations                         map[string]string
+		expectedAnnotations                 map[string]string
 	}{
 		{
-			name:               "external traffic policy with annotation propagation disabled",
-			svcAnnoPropEnabled: false,
+			name:                                "external traffic policy with annotation propagation disabled",
+			serviceAnnotationPropagationEnabled: false,
 			annotations: map[string]string{
 				"should-not-appear": "test-value",
 			},
@@ -330,8 +330,8 @@ func TestEnsureLoadBalancer_VMServiceExternalTrafficPolicyLocal(t *testing.T) {
 			},
 		},
 		{
-			name:               "external traffic policy with annotation propagation enabled",
-			svcAnnoPropEnabled: true,
+			name:                                "external traffic policy with annotation propagation enabled",
+			serviceAnnotationPropagationEnabled: true,
 			annotations: map[string]string{
 				"test-annotation":        "test-value",
 				"conflicting-annotation": "should-be-overridden",
@@ -347,8 +347,8 @@ func TestEnsureLoadBalancer_VMServiceExternalTrafficPolicyLocal(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			// Set global flag and reset after test
-			testSvcAnnoPropEnabled = tc.svcAnnoPropEnabled
-			defer func() { testSvcAnnoPropEnabled = false }()
+			testServiceAnnotationPropagationEnabled = tc.serviceAnnotationPropagationEnabled
+			defer func() { testServiceAnnotationPropagationEnabled = false }()
 
 			lb, fc := newTestLoadBalancer()
 			testK8sService := createTestService(tc.annotations)

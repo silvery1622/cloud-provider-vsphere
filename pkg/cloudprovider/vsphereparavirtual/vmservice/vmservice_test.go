@@ -50,9 +50,9 @@ var (
 		Name:       testClustername,
 		UID:        "1bbf49a7-fbce-4502-bb4c-4c3544cacc9e",
 	}
-	testSvcAnnoPropEnabled = false
-	vms                    VMService
-	fakeLBIP               = "1.1.1.1"
+	testServiceAnnotationPropagationEnabled = false
+	vms                                     VMService
+	fakeLBIP                                = "1.1.1.1"
 )
 
 func initTest() (*v1.Service, VMService, *dynamicfake.FakeDynamicClient) {
@@ -80,7 +80,7 @@ func initTest() (*v1.Service, VMService, *dynamicfake.FakeDynamicClient) {
 	scheme := runtime.NewScheme()
 	_ = vmopv1.AddToScheme(scheme)
 	fc := dynamicfake.NewSimpleDynamicClient(scheme)
-	vms = NewVMService(vmopclient.NewFakeClientSet(fc), testClusterNameSpace, &testOwnerReference, testSvcAnnoPropEnabled)
+	vms = NewVMService(vmopclient.NewFakeClientSet(fc), testClusterNameSpace, &testOwnerReference, testServiceAnnotationPropagationEnabled)
 	return testK8sService, vms, fc
 }
 
@@ -103,7 +103,7 @@ func TestNewVMService(t *testing.T) {
 			assert.NoError(t, err)
 			assert.NotEqual(t, client, nil)
 
-			realVms := NewVMService(client, testClusterNameSpace, &testOwnerReference, testSvcAnnoPropEnabled)
+			realVms := NewVMService(client, testClusterNameSpace, &testOwnerReference, testServiceAnnotationPropagationEnabled)
 			assert.NotEqual(t, realVms, nil)
 		})
 	}
@@ -343,7 +343,7 @@ func TestCreateVMService_ExternalTrafficPolicyTypeLocal(t *testing.T) {
 	assert.Equal(t, hcPort, strconv.Itoa(30012))
 
 	// Verify propagated annotations (if enabled)
-	if testSvcAnnoPropEnabled {
+	if testServiceAnnotationPropagationEnabled {
 		assert.Equal(t, "test-value", vmServiceObj.Annotations["test-annotation"])
 	} else {
 		_, ok := vmServiceObj.Annotations["test-annotation"]
@@ -697,14 +697,14 @@ func TestDeleteVMService(t *testing.T) {
 
 func TestGetVMServiceAnnotations(t *testing.T) {
 	testCases := []struct {
-		name                string
-		svcAnnoPropEnabled  bool
-		serviceAnnotations  map[string]string
-		expectedAnnotations map[string]string
+		name                                string
+		serviceAnnotationPropagationEnabled bool
+		serviceAnnotations                  map[string]string
+		expectedAnnotations                 map[string]string
 	}{
 		{
-			name:               "annotation propagation enabled without service annotations",
-			svcAnnoPropEnabled: false,
+			name:                                "annotation propagation enabled without service annotations",
+			serviceAnnotationPropagationEnabled: false,
 			serviceAnnotations: map[string]string{
 				"key1": "value1",
 				"key2": "value2",
@@ -715,8 +715,8 @@ func TestGetVMServiceAnnotations(t *testing.T) {
 			},
 		},
 		{
-			name:               "annotation propagation enabled with service annotations",
-			svcAnnoPropEnabled: true,
+			name:                                "annotation propagation enabled with service annotations",
+			serviceAnnotationPropagationEnabled: true,
 			serviceAnnotations: map[string]string{
 				"key1": "value1",
 				"key2": "value2",
@@ -729,8 +729,8 @@ func TestGetVMServiceAnnotations(t *testing.T) {
 			},
 		},
 		{
-			name:               "annotation propagation enabled with conflicting keys",
-			svcAnnoPropEnabled: true,
+			name:                                "annotation propagation enabled with conflicting keys",
+			serviceAnnotationPropagationEnabled: true,
 			serviceAnnotations: map[string]string{
 				AnnotationServiceExternalTrafficPolicyKey: "conflict-value",
 				"key2": "value2",
@@ -742,8 +742,8 @@ func TestGetVMServiceAnnotations(t *testing.T) {
 			},
 		},
 		{
-			name:               "annotation propagation disabled",
-			svcAnnoPropEnabled: false,
+			name:                                "annotation propagation disabled",
+			serviceAnnotationPropagationEnabled: false,
 			serviceAnnotations: map[string]string{
 				"key1": "value1",
 			},
@@ -757,8 +757,8 @@ func TestGetVMServiceAnnotations(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			// Set global flag and reset after test
-			testSvcAnnoPropEnabled = tc.svcAnnoPropEnabled
-			defer func() { testSvcAnnoPropEnabled = false }()
+			testServiceAnnotationPropagationEnabled = tc.serviceAnnotationPropagationEnabled
+			defer func() { testServiceAnnotationPropagationEnabled = false }()
 
 			// Create a test service with annotations
 			testK8sService := &v1.Service{
@@ -774,7 +774,7 @@ func TestGetVMServiceAnnotations(t *testing.T) {
 			}
 
 			// Call the function under test
-			annotations := getVMServiceAnnotations(nil, testK8sService, tc.svcAnnoPropEnabled)
+			annotations := getVMServiceAnnotations(nil, testK8sService, tc.serviceAnnotationPropagationEnabled)
 
 			// Verify the annotations match expectations
 			assert.Equal(t, tc.expectedAnnotations, annotations)
@@ -797,7 +797,7 @@ func TestUpdateVMService_AnnotationPropagation(t *testing.T) {
 	assert.NoError(t, err)
 
 	// Verify propagated annotations (if enabled)
-	if testSvcAnnoPropEnabled {
+	if testServiceAnnotationPropagationEnabled {
 		assert.Equal(t, "new-value", vmServiceObj.Annotations["new-annotation"])
 	} else {
 		_, ok := vmServiceObj.Annotations["new-annotation"]
