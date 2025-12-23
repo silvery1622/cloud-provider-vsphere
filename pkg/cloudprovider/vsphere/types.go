@@ -101,6 +101,12 @@ type NodeManager struct {
 	// Reference to CPI-specific configuration
 	cfg *ccfg.CPIConfig
 
+	// relaxedIPValidation controls whether the node manager logs warnings
+	// instead of returning errors when an IP family is not discoverable via
+	// vCenter's Guest Info API (e.g. VMware Tools not reporting guest.Net).
+	// Enabled by the --relaxed-ip-validation flag.
+	relaxedIPValidation bool
+
 	// Mutexes
 	nodeInfoLock    sync.RWMutex
 	nodeRegInfoLock sync.RWMutex

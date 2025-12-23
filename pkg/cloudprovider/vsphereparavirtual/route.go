@@ -165,10 +165,10 @@ func (r *routesProvider) DeleteRoute(ctx context.Context, clusterName string, ro
 	return nil
 }
 
-// getNodeIPAddress gets node IP address
+// getNodeIPAddress gets node IP address for the specified IP family
 // IP family of node address and podCIDR should be the same
 // The order is to choose node internal IP first, then external IP
-// Return the first IP address as node IP
+// Returns the first IP address matching the requested IP family
 func (r *routesProvider) getNodeIPAddress(nodeName string, isIPv4 bool) (string, error) {
 	node, err := r.nodeLister.Get(nodeName)
 	if err != nil {
@@ -176,6 +176,7 @@ func (r *routesProvider) getNodeIPAddress(nodeName string, isIPv4 bool) (string,
 		return "", err
 	}
 
+	// Collect all IPs (InternalIP first, then ExternalIP for priority)
 	allIPs := make([]net.IP, 0, len(node.Status.Addresses))
 	for _, addr := range node.Status.Addresses {
 		if addr.Type == v1.NodeInternalIP {
@@ -193,15 +194,32 @@ func (r *routesProvider) getNodeIPAddress(nodeName string, isIPv4 bool) (string,
 			}
 		}
 	}
+
 	if len(allIPs) == 0 {
 		return "", fmt.Errorf("node %s has neither InternalIP nor ExternalIP", nodeName)
 	}
+
+	// Find the first IP matching the requested family
+	ipFamily := "IPv6"
+	if isIPv4 {
+		ipFamily = "IPv4"
+	}
+
 	for _, ip := range allIPs {
 		if (ip.To4() != nil) == isIPv4 {
-			klog.V(4).Infof("successfully fetching node %s IP address", node.Name)
+			klog.V(4).Infof("successfully fetched %s address %s for node %s", ipFamily, ip.String(), nodeName)
 			return ip.String(), nil
 		}
 	}
 
-	return "", fmt.Errorf("node %s does not have the same IP family with podCIDR", nodeName)
+	// Provide more detailed error message
+	availableIPs := make([]string, len(allIPs))
+	for i, ip := range allIPs {
+		availableIPs[i] = ip.String()
+	}
+	return "", fmt.Errorf("node %s does not have any %s address (available IPs: %v)", nodeName, ipFamily, availableIPs)
 }
+
+// TODO(danqing.hou): getAllNodeIPAddresses will be used by the dual-stack
+// route programming path (NSX-T route entries per IP family). Add it back
+// when that caller is implemented.

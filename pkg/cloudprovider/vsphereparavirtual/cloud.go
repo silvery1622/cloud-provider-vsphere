@@ -71,6 +71,10 @@ var (
 	// with the Supervisor cluster. Defaults to v1alpha2 for backward compatibility.
 	// Controlled via the --vm-operator-api-version flag.
 	vmopAPIVersion string
+
+	// clusterIPFamily is the raw --cluster-ip-family flag; Initialize resolves it
+	// with ParseClusterIPFamily to one of: ipv4, ipv6, ipv4ipv6, or ipv6ipv4.
+	clusterIPFamily string
 )
 
 func init() {
@@ -100,6 +104,13 @@ func init() {
 	flag.StringVar(&podIPPoolType, "pod-ip-pool-type", "", "Specify if Pod IP address is Public or Private routable in VPC network. Valid values are Public and Private")
 	flag.BoolVar(&serviceAnnotationPropagationEnabled, "enable-service-annotation-propagation", false, "If true, will propagate the service annotation to resource in supervisor cluster.")
 	flag.StringVar(&vmopAPIVersion, "vm-operator-api-version", factory.V1alpha2, "the API version to use when communicating with VM Operator in supervisor mode. Valid values are: "+factory.V1alpha2+", "+factory.V1alpha5+", "+factory.V1alpha6)
+	flag.StringVar(&clusterIPFamily, "cluster-ip-family", ClusterIPFamilyIPv4,
+		"Cluster IP family policy for node address ordering and compatibility checks. "+
+			"Controls the order of NodeInternalIP entries reported to the API server. "+
+			"Valid values (case-insensitive): "+ClusterIPFamilyIPv4+" (default), "+ClusterIPFamilyIPv6+", "+
+			ClusterIPFamilyIPv4IPv6+" (dual-stack, IPv4 first), "+ClusterIPFamilyIPv6IPv4+" (dual-stack, IPv6 first). "+
+			ClusterIPFamilyIPv6+", "+ClusterIPFamilyIPv4IPv6+", and "+ClusterIPFamilyIPv6IPv4+" require "+
+			"--vm-operator-api-version >= "+factory.V1alpha6+" (dual-stack VirtualMachineService fields).")
 }
 
 // Creates new Controller node interface and returns
@@ -144,6 +155,13 @@ func (cp *VSphereParavirtual) Initialize(clientBuilder cloudprovider.ControllerC
 		klog.Fatalf("Failed to get cluster namespace: %v", err)
 	}
 
+	resolvedClusterIPFamily, err := ParseClusterIPFamily(clusterIPFamily)
+	if err != nil {
+		klog.Fatalf("Invalid --cluster-ip-family: %v", err)
+	}
+	if err := validateIPFamilyConfig(resolvedClusterIPFamily, vmopAPIVersion); err != nil {
+		klog.Fatalf("Invalid flag combination: %v", err)
+	}
 	klog.Infof("Using VM Operator API version: %s", vmopAPIVersion)
 	vmopClient, err := factory.NewAdapter(vmopAPIVersion, kcfg)
 	if err != nil {
@@ -162,7 +180,8 @@ func (cp *VSphereParavirtual) Initialize(clientBuilder cloudprovider.ControllerC
 	}
 	cp.loadBalancer = lb
 
-	instances, err := NewInstances(clusterNS, vmopClient)
+	klog.Infof("Using cluster IP family: %s", resolvedClusterIPFamily)
+	instances, err := NewInstances(clusterNS, vmopClient, resolvedClusterIPFamily)
 	if err != nil {
 		klog.Errorf("Failed to init Instance: %v", err)
 	}

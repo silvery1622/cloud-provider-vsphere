@@ -70,14 +70,30 @@ type (
 	}
 )
 
-func newNodeManager(cfg *ccfg.CPIConfig, cm *cm.ConnectionManager) *NodeManager {
-	return &NodeManager{
+func newNodeManager(cfg *ccfg.CPIConfig, cm *cm.ConnectionManager, opts ...nodeManagerOption) *NodeManager {
+	nm := &NodeManager{
 		nodeNameMap:       make(map[string]*NodeInfo),
 		nodeUUIDMap:       make(map[string]*NodeInfo),
 		nodeRegUUIDMap:    make(map[string]*v1.Node),
 		vcList:            make(map[string]*VCenterInfo),
 		connectionManager: cm,
 		cfg:               cfg,
+	}
+	for _, opt := range opts {
+		opt(nm)
+	}
+	return nm
+}
+
+// nodeManagerOption is a functional option for NodeManager construction.
+type nodeManagerOption func(*NodeManager)
+
+// withRelaxedIPValidation returns a nodeManagerOption that enables relaxed IP
+// validation: DiscoverNode will log a warning instead of returning an error
+// when an IP family cannot be found in vCenter's Guest Info API.
+func withRelaxedIPValidation() nodeManagerOption {
+	return func(nm *NodeManager) {
+		nm.relaxedIPValidation = true
 	}
 }
 
@@ -227,8 +243,12 @@ func (nm *NodeManager) DiscoverNode(nodeID string, searchBy cm.FindVM) error {
 	}
 
 	if len(oVM.Guest.Net) == 0 {
-		klog.V(4).Infof("oVM.Guest.Net is empty, skipping node discovery. This could be cauesd by vmtool not reporting correct IP address")
-		return errors.New("VM GuestNicInfo is empty")
+		if nm.relaxedIPValidation {
+			klog.Warningf("VM GuestNicInfo is empty for node %s; VMware Tools may not be reporting guest.Net. Continuing with no addresses (relaxed-ip-validation enabled)", nodeID)
+		} else {
+			klog.V(4).Infof("oVM.Guest.Net is empty, skipping node discovery. This could be caused by vmtool not reporting correct IP address")
+			return errors.New("VM GuestNicInfo is empty")
+		}
 	}
 
 	tenantRef := vmDI.VcServer
@@ -308,7 +328,11 @@ func (nm *NodeManager) DiscoverNode(nodeID string, searchBy cm.FindVM) error {
 	if len(nonLocalhostIPs) == 0 {
 		klog.V(4).Infof("nonLocalhostIPs is empty")
 		klog.V(4).Infof("oVM.Guest.Net=%v", oVM.Guest.Net)
-		return fmt.Errorf("unable to find suitable IP address for node after filtering out localhost IPs")
+		if nm.relaxedIPValidation {
+			klog.Warningf("No routable IP addresses found for node %s after filtering localhost IPs; continuing with no IP addresses (relaxed-ip-validation enabled)", nodeID)
+		} else {
+			return fmt.Errorf("unable to find suitable IP address for node after filtering out localhost IPs")
+		}
 	}
 
 	sortedNonLocalhostIPs, err := sortStaticallyConfiguredAddressesFirst(oVM.Config.ExtraConfig, nonLocalhostIPs)
@@ -349,7 +373,11 @@ func (nm *NodeManager) DiscoverNode(nodeID string, searchBy cm.FindVM) error {
 		if len(oVM.Guest.Net) > 0 {
 			if discoveredInternal == nil && discoveredExternal == nil {
 				klog.V(4).Infof("oVM.Guest.Net=%v", oVM.Guest.Net)
-				return fmt.Errorf("unable to find suitable IP address for node %s with IP family %s", nodeID, ipFamilies)
+				if nm.relaxedIPValidation {
+					klog.Warningf("Unable to find suitable IP address for node %s with IP family %s; continuing with available addresses (relaxed-ip-validation enabled)", nodeID, ipFamily)
+				} else {
+					return fmt.Errorf("unable to find suitable IP address for node %s with IP family %s", nodeID, ipFamily)
+				}
 			}
 		}
 	}
