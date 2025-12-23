@@ -89,31 +89,90 @@ func NewInstances(clusterNS string, kcfg *rest.Config) (cloudprovider.Instances,
 }
 
 func createNodeAddresses(vm *vmopv1.VirtualMachine) []v1.NodeAddress {
-	// TODO: Currently, dual-stack (IPv4 and IPv6) is not supported.
-	// Cluster will be assumed as IPv4 Primary by default.
-	// In the future, when dual-stack support is implemented, this code should be updated to
-	// dynamically determine the IP format based on the cluster's IP family.
-	// https://github.com/kubernetes/cloud-provider-vsphere/issues/1129
-	if vm.Status.Network == nil || (vm.Status.Network.PrimaryIP4 == "" && vm.Status.Network.PrimaryIP6 == "") {
-		klog.V(4).Info("instance found, but no address yet")
+	// Enhanced dual-stack support: Report ALL valid IPs to prevent node registration failures
+	// This ensures kubelet-selected IPs are always found in the CPI-reported address list
+	if vm.Status.Network == nil {
+		klog.V(4).Info("instance found, but no network status yet")
 		return []v1.NodeAddress{}
 	}
 
-	address := vm.Status.Network.PrimaryIP4
-	if address == "" {
-		address = vm.Status.Network.PrimaryIP6
+	var nodeAddresses []v1.NodeAddress
+	addedIPs := make(map[string]bool) // Track added IPs to avoid duplicates
+
+	// Step 1: Add Primary IPs first (maintains API Server compatibility and ordering)
+	// Primary IPs are preferred by most configurations
+	primaryV4 := vm.Status.Network.PrimaryIP4
+	primaryV6 := vm.Status.Network.PrimaryIP6
+
+	if primaryV4 != "" {
+		klog.V(4).Infof("Adding primary IPv4 address: %s", primaryV4)
+		nodeAddresses = append(nodeAddresses, v1.NodeAddress{
+			Type:    v1.NodeInternalIP,
+			Address: primaryV4,
+		})
+		addedIPs[primaryV4] = true
 	}
 
-	return []v1.NodeAddress{
-		{
+	if primaryV6 != "" {
+		klog.V(4).Infof("Adding primary IPv6 address: %s", primaryV6)
+		nodeAddresses = append(nodeAddresses, v1.NodeAddress{
 			Type:    v1.NodeInternalIP,
-			Address: address,
-		},
-		{
-			Type:    v1.NodeHostName,
-			Address: "",
-		},
+			Address: primaryV6,
+		})
+		addedIPs[primaryV6] = true
 	}
+
+	// Step 2: Add all other valid IPs from network interfaces (Permissive Mode)
+	// This prevents "Node IP not found in cloud provider" errors when kubelet
+	// selects a valid non-primary IP (e.g., secondary interface, SLAAC address)
+	if vm.Status.Network.Interfaces != nil {
+		for ifaceIdx, iface := range vm.Status.Network.Interfaces {
+			if iface.IP == nil || iface.IP.Addresses == nil {
+				continue
+			}
+
+			for _, ipAddr := range iface.IP.Addresses {
+				// Extract IP address from CIDR notation (e.g., "192.0.2.1/24" -> "192.0.2.1")
+				ip := ipAddr.Address
+				if idx := strings.Index(ip, "/"); idx != -1 {
+					ip = ip[:idx]
+				}
+
+				// Skip if already added
+				if addedIPs[ip] {
+					continue
+				}
+
+				// Filter out link-local addresses (fe80::/10 for IPv6, 169.254.0.0/16 for IPv4)
+				if strings.HasPrefix(ip, "fe80:") || strings.HasPrefix(ip, "169.254.") {
+					klog.V(6).Infof("Skipping link-local address: %s", ip)
+					continue
+				}
+
+				klog.V(4).Infof("Adding interface %d IP address: %s", ifaceIdx, ip)
+				nodeAddresses = append(nodeAddresses, v1.NodeAddress{
+					Type:    v1.NodeInternalIP,
+					Address: ip,
+				})
+				addedIPs[ip] = true
+			}
+		}
+	}
+
+	// Step 3: Add hostname
+	nodeAddresses = append(nodeAddresses, v1.NodeAddress{
+		Type:    v1.NodeHostName,
+		Address: "",
+	})
+
+	// Log summary for troubleshooting
+	if len(nodeAddresses) > 1 { // More than just hostname
+		klog.V(2).Infof("VM %s: Reporting %d IP address(es) to API server", vm.Name, len(nodeAddresses)-1)
+	} else {
+		klog.Warningf("VM %s: No IP addresses found in network status", vm.Name)
+	}
+
+	return nodeAddresses
 }
 
 // NodeAddresses returns the addresses of the specified instance if one exists, otherwise nil

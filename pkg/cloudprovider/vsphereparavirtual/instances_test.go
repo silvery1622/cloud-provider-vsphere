@@ -54,11 +54,6 @@ func createTestVM(name, namespace, biosUUID string) *vmopv1.VirtualMachine {
 }
 
 func createTestVMWithVMIPAndHost(name, namespace, biosUUID string) *vmopv1.VirtualMachine {
-	// TODO: Currently, dual-stack (IPv4 and IPv6) is not supported.
-	// Cluster will be assumed as IPv4 Primary by default.
-	// In the future, when dual-stack support is implemented, this code should be updated to
-	// dynamically determine the IP format based on the cluster's IP family.
-	// https://github.com/kubernetes/cloud-provider-vsphere/issues/1129
 	return &vmopv1.VirtualMachine{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
@@ -69,6 +64,96 @@ func createTestVMWithVMIPAndHost(name, namespace, biosUUID string) *vmopv1.Virtu
 			Host:     "test-host",
 			Network: &vmopv1.VirtualMachineNetworkStatus{
 				PrimaryIP4: "1.2.3.4",
+			},
+		},
+	}
+}
+
+func createTestVMWithIPv6(name, namespace, biosUUID string) *vmopv1.VirtualMachine {
+	return &vmopv1.VirtualMachine{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+		},
+		Status: vmopv1.VirtualMachineStatus{
+			BiosUUID: biosUUID,
+			Host:     "test-host",
+			Network: &vmopv1.VirtualMachineNetworkStatus{
+				PrimaryIP6: "2001:db8::1",
+			},
+		},
+	}
+}
+
+func createTestVMWithDualStack(name, namespace, biosUUID string) *vmopv1.VirtualMachine {
+	return &vmopv1.VirtualMachine{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+		},
+		Status: vmopv1.VirtualMachineStatus{
+			BiosUUID: biosUUID,
+			Host:     "test-host",
+			Network: &vmopv1.VirtualMachineNetworkStatus{
+				PrimaryIP4: "1.2.3.4",
+				PrimaryIP6: "2001:db8::1",
+			},
+		},
+	}
+}
+
+func createTestVMWithMultipleIPs(name, namespace, biosUUID string) *vmopv1.VirtualMachine {
+	return &vmopv1.VirtualMachine{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+		},
+		Status: vmopv1.VirtualMachineStatus{
+			BiosUUID: biosUUID,
+			Host:     "test-host",
+			Network: &vmopv1.VirtualMachineNetworkStatus{
+				PrimaryIP4: "1.2.3.4",
+				PrimaryIP6: "2001:db8::1",
+				Interfaces: []vmopv1.VirtualMachineNetworkInterfaceStatus{
+					{
+						IP: &vmopv1.VirtualMachineNetworkInterfaceIPStatus{
+							Addresses: []vmopv1.VirtualMachineNetworkInterfaceIPAddrStatus{
+								{Address: "1.2.3.4/24"},       // Primary IPv4 (will be deduplicated)
+								{Address: "10.0.0.5/24"},      // Secondary IPv4
+								{Address: "2001:db8::1/64"},   // Primary IPv6 (will be deduplicated)
+								{Address: "2001:db8::100/64"}, // Secondary IPv6
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+func createTestVMWithLinkLocalAddresses(name, namespace, biosUUID string) *vmopv1.VirtualMachine {
+	return &vmopv1.VirtualMachine{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+		},
+		Status: vmopv1.VirtualMachineStatus{
+			BiosUUID: biosUUID,
+			Host:     "test-host",
+			Network: &vmopv1.VirtualMachineNetworkStatus{
+				PrimaryIP4: "1.2.3.4",
+				Interfaces: []vmopv1.VirtualMachineNetworkInterfaceStatus{
+					{
+						IP: &vmopv1.VirtualMachineNetworkInterfaceIPStatus{
+							Addresses: []vmopv1.VirtualMachineNetworkInterfaceIPAddrStatus{
+								{Address: "1.2.3.4/24"},
+								{Address: "fe80::1/64"},     // Link-local IPv6 (should be filtered)
+								{Address: "169.254.1.1/16"}, // Link-local IPv4 (should be filtered)
+								{Address: "10.0.0.5/24"},
+							},
+						},
+					},
+				},
 			},
 		},
 	}
@@ -289,12 +374,92 @@ func TestNodeAddressesByProviderID(t *testing.T) {
 			expectedErr:         cloudprovider.InstanceNotFound,
 		},
 		{
-			name:   "NodeAddressesByProviderID returns a valid address for a found node",
+			name:   "NodeAddressesByProviderID returns a valid IPv4 address for a found node",
 			testVM: createTestVMWithVMIPAndHost(string(testVMName), testClusterNameSpace, testVMUUID),
 			expectedNodeAddress: []v1.NodeAddress{
 				{
 					Type:    v1.NodeInternalIP,
 					Address: "1.2.3.4",
+				},
+				{
+					Type:    v1.NodeHostName,
+					Address: "",
+				},
+			},
+			expectedErr: nil,
+		},
+		{
+			name:   "NodeAddressesByProviderID returns a valid IPv6 address for a found node",
+			testVM: createTestVMWithIPv6(string(testVMName), testClusterNameSpace, testVMUUID),
+			expectedNodeAddress: []v1.NodeAddress{
+				{
+					Type:    v1.NodeInternalIP,
+					Address: "2001:db8::1",
+				},
+				{
+					Type:    v1.NodeHostName,
+					Address: "",
+				},
+			},
+			expectedErr: nil,
+		},
+		{
+			name:   "NodeAddressesByProviderID returns both IPv4 and IPv6 addresses for dual-stack node",
+			testVM: createTestVMWithDualStack(string(testVMName), testClusterNameSpace, testVMUUID),
+			expectedNodeAddress: []v1.NodeAddress{
+				{
+					Type:    v1.NodeInternalIP,
+					Address: "1.2.3.4",
+				},
+				{
+					Type:    v1.NodeInternalIP,
+					Address: "2001:db8::1",
+				},
+				{
+					Type:    v1.NodeHostName,
+					Address: "",
+				},
+			},
+			expectedErr: nil,
+		},
+		{
+			name:   "NodeAddressesByProviderID returns all valid IPs including secondary addresses",
+			testVM: createTestVMWithMultipleIPs(string(testVMName), testClusterNameSpace, testVMUUID),
+			expectedNodeAddress: []v1.NodeAddress{
+				{
+					Type:    v1.NodeInternalIP,
+					Address: "1.2.3.4",
+				},
+				{
+					Type:    v1.NodeInternalIP,
+					Address: "2001:db8::1",
+				},
+				{
+					Type:    v1.NodeInternalIP,
+					Address: "10.0.0.5",
+				},
+				{
+					Type:    v1.NodeInternalIP,
+					Address: "2001:db8::100",
+				},
+				{
+					Type:    v1.NodeHostName,
+					Address: "",
+				},
+			},
+			expectedErr: nil,
+		},
+		{
+			name:   "NodeAddressesByProviderID filters out link-local addresses",
+			testVM: createTestVMWithLinkLocalAddresses(string(testVMName), testClusterNameSpace, testVMUUID),
+			expectedNodeAddress: []v1.NodeAddress{
+				{
+					Type:    v1.NodeInternalIP,
+					Address: "1.2.3.4",
+				},
+				{
+					Type:    v1.NodeInternalIP,
+					Address: "10.0.0.5",
 				},
 				{
 					Type:    v1.NodeHostName,
@@ -364,12 +529,92 @@ func TestNodeAddresses(t *testing.T) {
 			expectedErr:         cloudprovider.InstanceNotFound,
 		},
 		{
-			name:   "NodeAddresses returns a valid address for a found node",
+			name:   "NodeAddresses returns a valid IPv4 address for a found node",
 			testVM: createTestVMWithVMIPAndHost(string(testVMName), testClusterNameSpace, testVMUUID),
 			expectedNodeAddress: []v1.NodeAddress{
 				{
 					Type:    v1.NodeInternalIP,
 					Address: "1.2.3.4",
+				},
+				{
+					Type:    v1.NodeHostName,
+					Address: "",
+				},
+			},
+			expectedErr: nil,
+		},
+		{
+			name:   "NodeAddresses returns a valid IPv6 address for a found node",
+			testVM: createTestVMWithIPv6(string(testVMName), testClusterNameSpace, testVMUUID),
+			expectedNodeAddress: []v1.NodeAddress{
+				{
+					Type:    v1.NodeInternalIP,
+					Address: "2001:db8::1",
+				},
+				{
+					Type:    v1.NodeHostName,
+					Address: "",
+				},
+			},
+			expectedErr: nil,
+		},
+		{
+			name:   "NodeAddresses returns both IPv4 and IPv6 addresses for dual-stack node",
+			testVM: createTestVMWithDualStack(string(testVMName), testClusterNameSpace, testVMUUID),
+			expectedNodeAddress: []v1.NodeAddress{
+				{
+					Type:    v1.NodeInternalIP,
+					Address: "1.2.3.4",
+				},
+				{
+					Type:    v1.NodeInternalIP,
+					Address: "2001:db8::1",
+				},
+				{
+					Type:    v1.NodeHostName,
+					Address: "",
+				},
+			},
+			expectedErr: nil,
+		},
+		{
+			name:   "NodeAddresses returns all valid IPs including secondary addresses",
+			testVM: createTestVMWithMultipleIPs(string(testVMName), testClusterNameSpace, testVMUUID),
+			expectedNodeAddress: []v1.NodeAddress{
+				{
+					Type:    v1.NodeInternalIP,
+					Address: "1.2.3.4",
+				},
+				{
+					Type:    v1.NodeInternalIP,
+					Address: "2001:db8::1",
+				},
+				{
+					Type:    v1.NodeInternalIP,
+					Address: "10.0.0.5",
+				},
+				{
+					Type:    v1.NodeInternalIP,
+					Address: "2001:db8::100",
+				},
+				{
+					Type:    v1.NodeHostName,
+					Address: "",
+				},
+			},
+			expectedErr: nil,
+		},
+		{
+			name:   "NodeAddresses filters out link-local addresses",
+			testVM: createTestVMWithLinkLocalAddresses(string(testVMName), testClusterNameSpace, testVMUUID),
+			expectedNodeAddress: []v1.NodeAddress{
+				{
+					Type:    v1.NodeInternalIP,
+					Address: "1.2.3.4",
+				},
+				{
+					Type:    v1.NodeInternalIP,
+					Address: "10.0.0.5",
 				},
 				{
 					Type:    v1.NodeHostName,
