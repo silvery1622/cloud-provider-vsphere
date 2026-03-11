@@ -15,7 +15,7 @@ require (
 	github.com/stretchr/testify v1.11.1
 	github.com/vmware-tanzu/nsx-operator/pkg/apis v0.0.0-20240827061921-8f0982975508
 	github.com/vmware-tanzu/nsx-operator/pkg/client v0.0.0-20240827061921-8f0982975508
-	github.com/vmware-tanzu/vm-operator/api v1.8.6
+	github.com/vmware-tanzu/vm-operator/api v1.9.1-0.20251029150609-93918c59a719
 	github.com/vmware/govmomi v0.52.0
 	github.com/vmware/vsphere-automation-sdk-go/lib v0.7.0
 	github.com/vmware/vsphere-automation-sdk-go/runtime v0.7.0
@@ -118,7 +118,7 @@ require (
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1 // indirect
 	gopkg.in/warnings.v0 v0.1.2 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
-	k8s.io/apiextensions-apiserver v0.31.0-alpha.3 // indirect
+	k8s.io/apiextensions-apiserver v0.31.0 // indirect
 	k8s.io/apiserver v0.36.0-alpha.0 // indirect
 	k8s.io/component-helpers v0.36.0-alpha.0 // indirect
 	k8s.io/controller-manager v0.36.0-alpha.0 // indirect
@@ -127,7 +127,7 @@ require (
 	k8s.io/kube-openapi v0.0.0-20250910181357-589584f1c912 // indirect
 	k8s.io/utils v0.0.0-20251002143259-bc988d571ff4 // indirect
 	sigs.k8s.io/apiserver-network-proxy/konnectivity-client v0.31.2 // indirect
-	sigs.k8s.io/controller-runtime v0.18.1-0.20240717024706-fcd2fcfc974f // indirect
+	sigs.k8s.io/controller-runtime v0.19.0 // indirect
 	sigs.k8s.io/json v0.0.0-20250730193827-2d320260d730 // indirect
 	sigs.k8s.io/randfill v1.0.0 // indirect
 	sigs.k8s.io/structured-merge-diff/v6 v6.3.0 // indirect

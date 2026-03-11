@@ -30,13 +30,14 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
-	rest "k8s.io/client-go/rest"
 	clientgotesting "k8s.io/client-go/testing"
 
 	"k8s.io/apimachinery/pkg/util/intstr"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 
+	adapterv2 "k8s.io/cloud-provider-vsphere/pkg/cloudprovider/vsphereparavirtual/vmoperator/adapter/v1alpha2"
 	vmopclient "k8s.io/cloud-provider-vsphere/pkg/cloudprovider/vsphereparavirtual/vmoperator/client"
+	vmoptypes "k8s.io/cloud-provider-vsphere/pkg/cloudprovider/vsphereparavirtual/vmoperator/types"
 )
 
 var (
@@ -80,30 +81,26 @@ func initTest(serviceAnnotationPropagationEnabled bool) (*v1.Service, VMService,
 	scheme := runtime.NewScheme()
 	_ = vmopv1.AddToScheme(scheme)
 	fc := dynamicfake.NewSimpleDynamicClient(scheme)
-	vms = NewVMService(vmopclient.NewFakeClientSet(fc), testClusterNameSpace, &testOwnerReference, serviceAnnotationPropagationEnabled)
+	vmopAdapter := adapterv2.NewWithFakeClient(vmopclient.NewFakeClient(fc))
+	vms = NewVMService(vmopAdapter, testClusterNameSpace, &testOwnerReference, serviceAnnotationPropagationEnabled)
 	return testK8sService, vms, fc
 }
 
 func TestNewVMService(t *testing.T) {
 	testCases := []struct {
-		name   string
-		config *rest.Config
-		err    error
+		name string
+		err  error
 	}{
 		{
-			name:   "NewVMService: when everything is ok",
-			config: &rest.Config{},
-			err:    nil,
+			name: "NewVMService: when everything is ok",
+			err:  nil,
 		},
 	}
 
 	for _, testCase := range testCases {
 		t.Run(testCase.name, func(t *testing.T) {
-			client, err := GetVmopClient(testCase.config)
-			assert.NoError(t, err)
-			assert.NotEqual(t, client, nil)
-
-			realVms := NewVMService(client, testClusterNameSpace, &testOwnerReference, false)
+			fakeAdapter, _ := adapterv2.NewFakeAdapter()
+			realVms := NewVMService(fakeAdapter, testClusterNameSpace, &testOwnerReference, false)
 			assert.NotEqual(t, realVms, nil)
 		})
 	}
@@ -131,8 +128,8 @@ func TestGetVMService_ReturnNil(t *testing.T) {
 			Namespace: testK8sServiceNameSpace,
 		},
 	}
-	vmService, err := vms.Get(context.Background(), k8sService, testClustername)
-	assert.Equal(t, vmService, (*vmopv1.VirtualMachineService)(nil))
+	vmServiceObj, err := vms.Get(context.Background(), k8sService, testClustername)
+	assert.Equal(t, vmServiceObj, (*vmoptypes.VirtualMachineServiceInfo)(nil))
 	assert.NoError(t, err)
 }
 
@@ -146,9 +143,9 @@ func TestGetVMService(t *testing.T) {
 	}
 	// create a fake VMService
 	createdVMService, _ := vms.Create(context.Background(), k8sService, testClustername)
-	vmService, err := vms.Get(context.Background(), k8sService, testClustername)
+	vmServiceObj, err := vms.Get(context.Background(), k8sService, testClustername)
 	assert.NoError(t, err)
-	assert.Equal(t, (*vmService).Spec, (*createdVMService).Spec)
+	assert.Equal(t, vmServiceObj.Spec, createdVMService.Spec)
 
 	err = vms.Delete(context.Background(), testK8sService, testClustername)
 	assert.NoError(t, err)
@@ -157,8 +154,8 @@ func TestGetVMService(t *testing.T) {
 func TestCreateVMService(t *testing.T) {
 	testK8sService, vms, _ := initTest(testServiceAnnotationPropagationEnabled)
 	ports, _ := findPorts(testK8sService)
-	expectedSpec := vmopv1.VirtualMachineServiceSpec{
-		Type:  vmopv1.VirtualMachineServiceTypeLoadBalancer,
+	expectedSpec := vmoptypes.VirtualMachineServiceSpec{
+		Type:  virtualMachineServiceTypeLoadBalancer,
 		Ports: ports,
 		Selector: map[string]string{
 			ClusterSelectorKey: testClustername,
@@ -168,7 +165,7 @@ func TestCreateVMService(t *testing.T) {
 
 	vmServiceObj, err := vms.Create(context.Background(), testK8sService, testClustername)
 	assert.NoError(t, err)
-	assert.Equal(t, (*vmServiceObj).Spec, expectedSpec)
+	assert.Equal(t, vmServiceObj.Spec, expectedSpec)
 
 	err = vms.Delete(context.Background(), testK8sService, testClustername)
 	assert.NoError(t, err)
@@ -177,8 +174,8 @@ func TestCreateVMService(t *testing.T) {
 func TestCreateVMServiceWithLegacySelector(t *testing.T) {
 	testK8sService, vms, _ := initTest(testServiceAnnotationPropagationEnabled)
 	ports, _ := findPorts(testK8sService)
-	expectedSpec := vmopv1.VirtualMachineServiceSpec{
-		Type:  vmopv1.VirtualMachineServiceTypeLoadBalancer,
+	expectedSpec := vmoptypes.VirtualMachineServiceSpec{
+		Type:  virtualMachineServiceTypeLoadBalancer,
 		Ports: ports,
 		Selector: map[string]string{
 			LegacyClusterSelectorKey: testClustername,
@@ -189,7 +186,7 @@ func TestCreateVMServiceWithLegacySelector(t *testing.T) {
 	IsLegacy = true
 	vmServiceObj, err := vms.Create(context.Background(), testK8sService, testClustername)
 	assert.NoError(t, err)
-	assert.Equal(t, (*vmServiceObj).Spec, expectedSpec)
+	assert.Equal(t, vmServiceObj.Spec, expectedSpec)
 
 	err = vms.Delete(context.Background(), testK8sService, testClustername)
 	assert.NoError(t, err)
@@ -218,18 +215,18 @@ func TestCreateVMService_ZeroNodeport(t *testing.T) {
 		},
 	}
 	vmServiceObj, err := vms.Create(context.Background(), k8sService, testClustername)
-	assert.Equal(t, vmServiceObj, (*vmopv1.VirtualMachineService)(nil))
+	assert.Equal(t, vmServiceObj, (*vmoptypes.VirtualMachineServiceInfo)(nil))
 	assert.Error(t, err)
 }
 
 func TestCreateDuplicateVMService(t *testing.T) {
 	testK8sService, vms, _ := initTest(testServiceAnnotationPropagationEnabled)
 	vmServiceObj, err := vms.Create(context.Background(), testK8sService, testClustername)
-	assert.NotEqual(t, vmServiceObj, (*vmopv1.VirtualMachineService)(nil))
+	assert.NotEqual(t, vmServiceObj, (*vmoptypes.VirtualMachineServiceInfo)(nil))
 	assert.NoError(t, err)
 	// Try to create the same object twice
 	vmServiceObj, err = vms.Create(context.Background(), testK8sService, testClustername)
-	assert.Equal(t, vmServiceObj, (*vmopv1.VirtualMachineService)(nil))
+	assert.Equal(t, vmServiceObj, (*vmoptypes.VirtualMachineServiceInfo)(nil))
 	assert.Error(t, err)
 }
 
@@ -238,7 +235,7 @@ func TestCreateVMService_LBConfigs(t *testing.T) {
 	testCases := []struct {
 		name           string
 		testK8sService *v1.Service
-		expectedSpec   vmopv1.VirtualMachineServiceSpec
+		expectedSpec   vmoptypes.VirtualMachineServiceSpec
 	}{
 		{
 			name: "when Service has loadBalancerIP defined",
@@ -263,8 +260,8 @@ func TestCreateVMService_LBConfigs(t *testing.T) {
 					LoadBalancerIP: fakeLBIP,
 				},
 			},
-			expectedSpec: vmopv1.VirtualMachineServiceSpec{
-				Type: vmopv1.VirtualMachineServiceTypeLoadBalancer,
+			expectedSpec: vmoptypes.VirtualMachineServiceSpec{
+				Type: virtualMachineServiceTypeLoadBalancer,
 				Selector: map[string]string{
 					ClusterSelectorKey: testClustername,
 					NodeSelectorKey:    NodeRole,
@@ -295,8 +292,8 @@ func TestCreateVMService_LBConfigs(t *testing.T) {
 					LoadBalancerSourceRanges: []string{"1.1.1.0/24", "10.0.0.0/19"},
 				},
 			},
-			expectedSpec: vmopv1.VirtualMachineServiceSpec{
-				Type: vmopv1.VirtualMachineServiceTypeLoadBalancer,
+			expectedSpec: vmoptypes.VirtualMachineServiceSpec{
+				Type: virtualMachineServiceTypeLoadBalancer,
 				Selector: map[string]string{
 					ClusterSelectorKey: testClustername,
 					NodeSelectorKey:    NodeRole,
@@ -312,7 +309,7 @@ func TestCreateVMService_LBConfigs(t *testing.T) {
 			testCase.expectedSpec.Ports = ports
 			vmServiceObj, err := vms.Create(context.Background(), testCase.testK8sService, testClustername)
 			assert.NoError(t, err)
-			assert.Equal(t, (*vmServiceObj).Spec, testCase.expectedSpec)
+			assert.Equal(t, vmServiceObj.Spec, testCase.expectedSpec)
 
 			testCase.testK8sService.Spec.LoadBalancerIP = ""
 			testCase.testK8sService.Spec.LoadBalancerSourceRanges = []string{}
@@ -462,8 +459,8 @@ func TestVMService_AlreadyExists(t *testing.T) {
 	}
 
 	ports, _ := findPorts(testK8sService)
-	expectedSpec := vmopv1.VirtualMachineServiceSpec{
-		Type:  vmopv1.VirtualMachineServiceTypeLoadBalancer,
+	expectedSpec := vmoptypes.VirtualMachineServiceSpec{
+		Type:  virtualMachineServiceTypeLoadBalancer,
 		Ports: ports,
 		Selector: map[string]string{
 			ClusterSelectorKey: testClustername,
@@ -475,7 +472,7 @@ func TestVMService_AlreadyExists(t *testing.T) {
 
 	vmServiceObj, err := vms.CreateOrUpdate(context.Background(), testK8sService, testClustername)
 	assert.Equal(t, err, ErrVMServiceIPNotFound)
-	assert.Equal(t, (*vmServiceObj).Spec, expectedSpec)
+	assert.Equal(t, vmServiceObj.Spec, expectedSpec)
 
 	err = vms.Delete(context.Background(), testK8sService, testClustername)
 	assert.NoError(t, err)
@@ -496,8 +493,8 @@ func TestUpdateVMService_NodePortChanges(t *testing.T) {
 	oldK8sService := testK8sService.DeepCopy()
 	oldK8sService.Spec.Ports[0].NodePort = 30500
 	ports, _ := findPorts(testK8sService)
-	expectedSpec := vmopv1.VirtualMachineServiceSpec{
-		Type:  vmopv1.VirtualMachineServiceTypeLoadBalancer,
+	expectedSpec := vmoptypes.VirtualMachineServiceSpec{
+		Type:  virtualMachineServiceTypeLoadBalancer,
 		Ports: ports,
 		Selector: map[string]string{
 			ClusterSelectorKey: testClustername,
@@ -508,7 +505,7 @@ func TestUpdateVMService_NodePortChanges(t *testing.T) {
 	createdVMService, _ := vms.Create(context.Background(), oldK8sService, testClustername)
 
 	vmServiceObj, err := vms.Update(context.Background(), testK8sService, testClustername, createdVMService)
-	assert.Equal(t, (*vmServiceObj).Spec, expectedSpec)
+	assert.Equal(t, vmServiceObj.Spec, expectedSpec)
 	assert.NoError(t, err)
 
 	err = vms.Delete(context.Background(), testK8sService, testClustername)
@@ -520,8 +517,8 @@ func TestUpdateVMService_LBIPAdded(t *testing.T) {
 	oldK8sService := testK8sService.DeepCopy()
 	testK8sService.Spec.LoadBalancerIP = fakeLBIP
 	ports, _ := findPorts(testK8sService)
-	expectedSpec := vmopv1.VirtualMachineServiceSpec{
-		Type:  vmopv1.VirtualMachineServiceTypeLoadBalancer,
+	expectedSpec := vmoptypes.VirtualMachineServiceSpec{
+		Type:  virtualMachineServiceTypeLoadBalancer,
 		Ports: ports,
 		Selector: map[string]string{
 			ClusterSelectorKey: testClustername,
@@ -533,7 +530,7 @@ func TestUpdateVMService_LBIPAdded(t *testing.T) {
 	createdVMService, _ := vms.Create(context.Background(), oldK8sService, testClustername)
 
 	vmServiceObj, err := vms.Update(context.Background(), testK8sService, testClustername, createdVMService)
-	assert.Equal(t, (*vmServiceObj).Spec, expectedSpec)
+	assert.Equal(t, vmServiceObj.Spec, expectedSpec)
 	assert.NoError(t, err)
 
 	err = vms.Delete(context.Background(), testK8sService, testClustername)
@@ -546,8 +543,8 @@ func TestUpdateVMService_LBIPChanges(t *testing.T) {
 	testK8sService.Spec.LoadBalancerIP = fakeLBIP
 	oldK8sService.Spec.LoadBalancerIP = "2.2.2.2"
 	ports, _ := findPorts(testK8sService)
-	expectedSpec := vmopv1.VirtualMachineServiceSpec{
-		Type:  vmopv1.VirtualMachineServiceTypeLoadBalancer,
+	expectedSpec := vmoptypes.VirtualMachineServiceSpec{
+		Type:  virtualMachineServiceTypeLoadBalancer,
 		Ports: ports,
 		Selector: map[string]string{
 			ClusterSelectorKey: testClustername,
@@ -559,7 +556,7 @@ func TestUpdateVMService_LBIPChanges(t *testing.T) {
 	createdVMService, _ := vms.Create(context.Background(), oldK8sService, testClustername)
 
 	vmServiceObj, err := vms.Update(context.Background(), testK8sService, testClustername, createdVMService)
-	assert.Equal(t, (*vmServiceObj).Spec, expectedSpec)
+	assert.Equal(t, vmServiceObj.Spec, expectedSpec)
 	assert.NoError(t, err)
 
 	err = vms.Delete(context.Background(), testK8sService, testClustername)
@@ -571,8 +568,8 @@ func TestUpdateVMService_LBSourceRangesAdded(t *testing.T) {
 	oldK8sService := testK8sService.DeepCopy()
 	testK8sService.Spec.LoadBalancerSourceRanges = []string{"1.1.1.0/24"}
 	ports, _ := findPorts(testK8sService)
-	expectedSpec := vmopv1.VirtualMachineServiceSpec{
-		Type:  vmopv1.VirtualMachineServiceTypeLoadBalancer,
+	expectedSpec := vmoptypes.VirtualMachineServiceSpec{
+		Type:  virtualMachineServiceTypeLoadBalancer,
 		Ports: ports,
 		Selector: map[string]string{
 			ClusterSelectorKey: testClustername,
@@ -584,7 +581,7 @@ func TestUpdateVMService_LBSourceRangesAdded(t *testing.T) {
 	createdVMService, _ := vms.Create(context.Background(), oldK8sService, testClustername)
 
 	vmServiceObj, err := vms.Update(context.Background(), testK8sService, testClustername, createdVMService)
-	assert.Equal(t, (*vmServiceObj).Spec, expectedSpec)
+	assert.Equal(t, vmServiceObj.Spec, expectedSpec)
 	assert.NoError(t, err)
 
 	err = vms.Delete(context.Background(), testK8sService, testClustername)
@@ -597,8 +594,8 @@ func TestUpdateVMService_LBSourceRangesChanges(t *testing.T) {
 	testK8sService.Spec.LoadBalancerSourceRanges = []string{"1.1.1.0/24"}
 	oldK8sService.Spec.LoadBalancerSourceRanges = []string{"2.2.2.0/24"}
 	ports, _ := findPorts(testK8sService)
-	expectedSpec := vmopv1.VirtualMachineServiceSpec{
-		Type:  vmopv1.VirtualMachineServiceTypeLoadBalancer,
+	expectedSpec := vmoptypes.VirtualMachineServiceSpec{
+		Type:  virtualMachineServiceTypeLoadBalancer,
 		Ports: ports,
 		Selector: map[string]string{
 			ClusterSelectorKey: testClustername,
@@ -610,7 +607,7 @@ func TestUpdateVMService_LBSourceRangesChanges(t *testing.T) {
 	createdVMService, _ := vms.Create(context.Background(), oldK8sService, testClustername)
 
 	vmServiceObj, err := vms.Update(context.Background(), testK8sService, testClustername, createdVMService)
-	assert.Equal(t, (*vmServiceObj).Spec, expectedSpec)
+	assert.Equal(t, vmServiceObj.Spec, expectedSpec)
 	assert.NoError(t, err)
 
 	err = vms.Delete(context.Background(), testK8sService, testClustername)
@@ -623,8 +620,8 @@ func TestUpdateVMService_ExternalTrafficPolicyLocal(t *testing.T) {
 	testK8sService.Spec.ExternalTrafficPolicy = v1.ServiceExternalTrafficPolicyTypeLocal
 	testK8sService.Spec.HealthCheckNodePort = 31234
 	ports, _ := findPorts(testK8sService)
-	expectedSpec := vmopv1.VirtualMachineServiceSpec{
-		Type:  vmopv1.VirtualMachineServiceTypeLoadBalancer,
+	expectedSpec := vmoptypes.VirtualMachineServiceSpec{
+		Type:  virtualMachineServiceTypeLoadBalancer,
 		Ports: ports,
 		Selector: map[string]string{
 			ClusterSelectorKey: testClustername,
@@ -640,8 +637,8 @@ func TestUpdateVMService_ExternalTrafficPolicyLocal(t *testing.T) {
 
 	vmServiceObj, err := vms.Update(context.Background(), testK8sService, testClustername, createdVMService)
 	assert.NoError(t, err)
-	assert.Equal(t, (*vmServiceObj).Spec, expectedSpec)
-	assert.Equal(t, (*vmServiceObj).Annotations, expectedAnnotations)
+	assert.Equal(t, vmServiceObj.Spec, expectedSpec)
+	assert.Equal(t, vmServiceObj.Annotations, expectedAnnotations)
 
 	err = vms.Delete(context.Background(), testK8sService, testClustername)
 	assert.NoError(t, err)
@@ -655,8 +652,8 @@ func TestUpdateVMService_ExternalTrafficPolicyCluster(t *testing.T) {
 	testK8sService.Spec.HealthCheckNodePort = 31234
 	oldK8sService.Spec.ExternalTrafficPolicy = v1.ServiceExternalTrafficPolicyTypeLocal
 	ports, _ := findPorts(testK8sService)
-	expectedSpec := vmopv1.VirtualMachineServiceSpec{
-		Type:  vmopv1.VirtualMachineServiceTypeLoadBalancer,
+	expectedSpec := vmoptypes.VirtualMachineServiceSpec{
+		Type:  virtualMachineServiceTypeLoadBalancer,
 		Ports: ports,
 		Selector: map[string]string{
 			ClusterSelectorKey: testClustername,
@@ -668,8 +665,8 @@ func TestUpdateVMService_ExternalTrafficPolicyCluster(t *testing.T) {
 
 	vmServiceObj, err := vms.Update(context.Background(), testK8sService, testClustername, createdVMService)
 	assert.NoError(t, err)
-	assert.Equal(t, (*vmServiceObj).Spec, expectedSpec)
-	assert.Equal(t, (*vmServiceObj).Annotations, map[string]string(nil))
+	assert.Equal(t, vmServiceObj.Spec, expectedSpec)
+	assert.Equal(t, vmServiceObj.Annotations, map[string]string(nil))
 
 	err = vms.Delete(context.Background(), testK8sService, testClustername)
 	assert.NoError(t, err)
@@ -744,7 +741,7 @@ func TestCreateVMService_ServiceAnnotationPropagation(t *testing.T) {
 			testK8sService.Annotations = tc.serviceAnnotations
 			vmServiceObj, err := vms.Create(context.Background(), testK8sService, testClustername)
 			assert.NoError(t, err)
-			assert.Equal(t, (*vmServiceObj).Annotations, tc.expectedAnnotations)
+			assert.Equal(t, vmServiceObj.Annotations, tc.expectedAnnotations)
 			err = vms.Delete(context.Background(), testK8sService, testClustername)
 			assert.NoError(t, err)
 		})
@@ -829,7 +826,7 @@ func TestUpdateVMService_ServiceAnnotationPropagation(t *testing.T) {
 
 			vmServiceObj, err := vms.Update(context.Background(), testK8sService, testClustername, createdVMService)
 			assert.NoError(t, err)
-			assert.Equal(t, (*vmServiceObj).Annotations, tc.expectedAnnotations)
+			assert.Equal(t, vmServiceObj.Annotations, tc.expectedAnnotations)
 
 			err = vms.Delete(context.Background(), testK8sService, testClustername)
 			assert.NoError(t, err)

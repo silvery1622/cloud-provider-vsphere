@@ -27,12 +27,13 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/rest"
 	clientgotesting "k8s.io/client-go/testing"
 	cloudprovider "k8s.io/cloud-provider"
-	vmopclient "k8s.io/cloud-provider-vsphere/pkg/cloudprovider/vsphereparavirtual/vmoperator/client"
 
 	dynamicfake "k8s.io/client-go/dynamic/fake"
+
+	adapterv2 "k8s.io/cloud-provider-vsphere/pkg/cloudprovider/vsphereparavirtual/vmoperator/adapter/v1alpha2"
+	vmopclient "k8s.io/cloud-provider-vsphere/pkg/cloudprovider/vsphereparavirtual/vmoperator/client"
 )
 
 var (
@@ -77,19 +78,18 @@ func createTestVMWithVMIPAndHost(name, namespace, biosUUID string) *vmopv1.Virtu
 func TestNewInstances(t *testing.T) {
 	testCases := []struct {
 		name        string
-		config      *rest.Config
 		expectedErr error
 	}{
 		{
 			name:        "NewInstance: when everything is ok",
-			config:      &rest.Config{},
 			expectedErr: nil,
 		},
 	}
 
 	for _, testCase := range testCases {
 		t.Run(testCase.name, func(t *testing.T) {
-			_, err := NewInstances(testClusterNameSpace, testCase.config)
+			fakeAdapter, _ := adapterv2.NewFakeAdapter()
+			_, err := NewInstances(testClusterNameSpace, fakeAdapter)
 			assert.NoError(t, err)
 			assert.Equal(t, testCase.expectedErr, err)
 		})
@@ -100,12 +100,13 @@ func initTest(testVM *vmopv1.VirtualMachine) (*instances, *dynamicfake.FakeDynam
 	scheme := runtime.NewScheme()
 	_ = vmopv1.AddToScheme(scheme)
 	fc := dynamicfake.NewSimpleDynamicClient(scheme)
-	fcw := vmopclient.NewFakeClientSet(fc)
+	c := vmopclient.NewFakeClient(fc)
+	vmopAdapter := adapterv2.NewWithFakeClient(c)
 	instance := &instances{
-		vmClient:  fcw,
+		vmClient:  vmopAdapter,
 		namespace: testClusterNameSpace,
 	}
-	_, err := fcw.V1alpha2().VirtualMachines(testVM.Namespace).Create(context.TODO(), testVM, metav1.CreateOptions{})
+	_, err := c.CreateVirtualMachine(context.TODO(), testVM)
 	return instance, fc, err
 }
 

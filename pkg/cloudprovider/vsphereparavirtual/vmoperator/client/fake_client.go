@@ -1,52 +1,27 @@
+/*
+Copyright 2026 The Kubernetes Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package client
 
 import (
-	"k8s.io/client-go/dynamic"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
-
-	"k8s.io/cloud-provider-vsphere/pkg/cloudprovider/vsphereparavirtual/vmoperator"
 )
 
-// FakeClientSet contains the fake clients for groups. Each group has exactly one
-// version included in a Clientset.
-type FakeClientSet struct {
-	FakeClient *FakeClient
-}
-
-// V1alpha2 retrieves the fake VmoperatorV1alpha2Client
-func (c *FakeClientSet) V1alpha2() vmoperator.V1alpha2Interface {
-	return c.FakeClient
-}
-
-// NewFakeClientSet creates a FakeClientWrapper
-func NewFakeClientSet(fakeClient *dynamicfake.FakeDynamicClient) *FakeClientSet {
-	fcw := &FakeClientSet{
-		FakeClient: &FakeClient{
-			DynamicClient: fakeClient,
-		},
-	}
-	return fcw
-}
-
-// FakeClient contains the fake dynamic client for vm operator group
-type FakeClient struct {
-	DynamicClient *dynamicfake.FakeDynamicClient
-}
-
-// VirtualMachines retrieves the virtualmachine client
-func (c *FakeClient) VirtualMachines(namespace string) vmoperator.VirtualMachineInterface {
-	return newVirtualMachines(c, namespace)
-}
-
-// VirtualMachineServices retrieves the virtualmachineservice client
-func (c *FakeClient) VirtualMachineServices(namespace string) vmoperator.VirtualMachineServiceInterface {
-	return newVirtualMachineServices(c, namespace)
-}
-
-// Client retrieves the dynamic client
-func (c *FakeClient) Client() dynamic.Interface {
-	if c == nil {
-		return nil
-	}
-	return c.DynamicClient
+// NewFakeClient creates a Client backed by the given fake dynamic client.
+// This is a convenience wrapper for tests.
+func NewFakeClient(fakeClient *dynamicfake.FakeDynamicClient) *Client {
+	return NewWithDynamicClient(fakeClient)
 }

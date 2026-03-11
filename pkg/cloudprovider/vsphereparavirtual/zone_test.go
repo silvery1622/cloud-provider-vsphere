@@ -10,9 +10,9 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
-	"k8s.io/client-go/rest"
 	cloudprovider "k8s.io/cloud-provider"
 
+	adapterv2 "k8s.io/cloud-provider-vsphere/pkg/cloudprovider/vsphereparavirtual/vmoperator/adapter/v1alpha2"
 	vmopclient "k8s.io/cloud-provider-vsphere/pkg/cloudprovider/vsphereparavirtual/vmoperator/client"
 )
 
@@ -26,13 +26,11 @@ var (
 func TestNewZones(t *testing.T) {
 	testCases := []struct {
 		name        string
-		config      *rest.Config
 		expectedErr error
 		testVM      *vmopv1.VirtualMachine
 	}{
 		{
 			name:        "NewZone: when everything is ok",
-			config:      &rest.Config{},
 			testVM:      createTestVMWithZone(string(vmName), testClusterNameSpace),
 			expectedErr: nil,
 		},
@@ -40,8 +38,8 @@ func TestNewZones(t *testing.T) {
 
 	for _, testCase := range testCases {
 		t.Run(testCase.name, func(t *testing.T) {
-			//initVMopClient(testCase.testVM)
-			_, err := NewZones(testClusterNameSpace, testCase.config)
+			fakeAdapter, _ := adapterv2.NewFakeAdapter()
+			_, err := NewZones(testClusterNameSpace, fakeAdapter)
 			assert.NoError(t, err)
 			assert.Equal(t, testCase.expectedErr, err)
 		})
@@ -135,12 +133,13 @@ func initVMopClient(testVM *vmopv1.VirtualMachine) (zones, *dynamicfake.FakeDyna
 	scheme := runtime.NewScheme()
 	_ = vmopv1.AddToScheme(scheme)
 	fc := dynamicfake.NewSimpleDynamicClient(scheme)
-	fcw := vmopclient.NewFakeClientSet(fc)
+	c := vmopclient.NewFakeClient(fc)
+	vmopAdapter := adapterv2.NewWithFakeClient(c)
 	zone := zones{
-		vmClient:  fcw,
+		vmClient:  vmopAdapter,
 		namespace: testClusterNameSpace,
 	}
-	_, err := fcw.V1alpha2().VirtualMachines(testVM.Namespace).Create(context.TODO(), testVM, metav1.CreateOptions{})
+	_, err := c.CreateVirtualMachine(context.TODO(), testVM)
 	return zone, fc, err
 }
 

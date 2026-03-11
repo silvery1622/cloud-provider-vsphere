@@ -1,3 +1,19 @@
+/*
+Copyright 2026 The Kubernetes Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package client
 
 import (
@@ -14,12 +30,13 @@ import (
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 )
 
-func initVMTest() (*virtualMachines, *dynamicfake.FakeDynamicClient) {
+const testNS = "test-ns"
+
+func initVMTest() (*Client, *dynamicfake.FakeDynamicClient) {
 	scheme := runtime.NewScheme()
 	_ = vmopv1.AddToScheme(scheme)
 	fc := dynamicfake.NewSimpleDynamicClient(scheme)
-	vms := newVirtualMachines(NewFakeClientSet(fc).V1alpha2(), "test-ns")
-	return vms, fc
+	return NewFakeClient(fc), fc
 }
 
 func TestVMCreate(t *testing.T) {
@@ -33,6 +50,7 @@ func TestVMCreate(t *testing.T) {
 		{
 			name: "Create: when everything is ok",
 			virtualMachine: &vmopv1.VirtualMachine{
+				ObjectMeta: metav1.ObjectMeta{Namespace: testNS},
 				Spec: vmopv1.VirtualMachineSpec{
 					ImageName: "test-image",
 				},
@@ -46,6 +64,7 @@ func TestVMCreate(t *testing.T) {
 		{
 			name: "Create: when create error",
 			virtualMachine: &vmopv1.VirtualMachine{
+				ObjectMeta: metav1.ObjectMeta{Namespace: testNS},
 				Spec: vmopv1.VirtualMachineSpec{
 					ImageName: "test-image",
 				},
@@ -60,11 +79,11 @@ func TestVMCreate(t *testing.T) {
 
 	for _, testCase := range testCases {
 		t.Run(testCase.name, func(t *testing.T) {
-			vms, fc := initVMTest()
+			c, fc := initVMTest()
 			if testCase.createFunc != nil {
 				fc.PrependReactor("create", "*", testCase.createFunc)
 			}
-			actualVM, err := vms.Create(context.Background(), testCase.virtualMachine, metav1.CreateOptions{})
+			actualVM, err := c.CreateVirtualMachine(context.Background(), testCase.virtualMachine)
 			if testCase.expectedErr {
 				assert.Error(t, err)
 			} else {
@@ -88,7 +107,8 @@ func TestVMUpdate(t *testing.T) {
 			name: "Update: when everything is ok",
 			oldVM: &vmopv1.VirtualMachine{
 				ObjectMeta: metav1.ObjectMeta{
-					Name: "test-vm",
+					Name:      "test-vm",
+					Namespace: testNS,
 				},
 				Spec: vmopv1.VirtualMachineSpec{
 					ImageName: "test-image",
@@ -96,7 +116,8 @@ func TestVMUpdate(t *testing.T) {
 			},
 			newVM: &vmopv1.VirtualMachine{
 				ObjectMeta: metav1.ObjectMeta{
-					Name: "test-vm",
+					Name:      "test-vm",
+					Namespace: testNS,
 				},
 				Spec: vmopv1.VirtualMachineSpec{
 					ImageName: "test-image-2",
@@ -114,11 +135,13 @@ func TestVMUpdate(t *testing.T) {
 		{
 			name: "Update: when update error",
 			oldVM: &vmopv1.VirtualMachine{
+				ObjectMeta: metav1.ObjectMeta{Namespace: testNS},
 				Spec: vmopv1.VirtualMachineSpec{
 					ImageName: "test-image",
 				},
 			},
 			newVM: &vmopv1.VirtualMachine{
+				ObjectMeta: metav1.ObjectMeta{Namespace: testNS},
 				Spec: vmopv1.VirtualMachineSpec{
 					ImageName: "test-image",
 				},
@@ -133,13 +156,13 @@ func TestVMUpdate(t *testing.T) {
 
 	for _, testCase := range testCases {
 		t.Run(testCase.name, func(t *testing.T) {
-			vms, fc := initVMTest()
-			_, err := vms.Create(context.Background(), testCase.oldVM, metav1.CreateOptions{})
+			c, fc := initVMTest()
+			_, err := c.CreateVirtualMachine(context.Background(), testCase.oldVM)
 			assert.NoError(t, err)
 			if testCase.updateFunc != nil {
 				fc.PrependReactor("update", "*", testCase.updateFunc)
 			}
-			updatedVM, err := vms.Update(context.Background(), testCase.newVM, metav1.UpdateOptions{})
+			updatedVM, err := c.UpdateVirtualMachine(context.Background(), testCase.newVM)
 			if testCase.expectedErr {
 				assert.Error(t, err)
 			} else {
@@ -161,7 +184,8 @@ func TestVMDelete(t *testing.T) {
 			name: "Delete: when everything is ok",
 			virtualMachine: &vmopv1.VirtualMachine{
 				ObjectMeta: metav1.ObjectMeta{
-					Name: "test-vm",
+					Name:      "test-vm",
+					Namespace: testNS,
 				},
 				Spec: vmopv1.VirtualMachineSpec{
 					ImageName: "test-image",
@@ -172,7 +196,8 @@ func TestVMDelete(t *testing.T) {
 			name: "Delete: when delete error",
 			virtualMachine: &vmopv1.VirtualMachine{
 				ObjectMeta: metav1.ObjectMeta{
-					Name: "test-vm",
+					Name:      "test-vm",
+					Namespace: testNS,
 				},
 				Spec: vmopv1.VirtualMachineSpec{
 					ImageName: "test-image",
@@ -187,13 +212,13 @@ func TestVMDelete(t *testing.T) {
 
 	for _, testCase := range testCases {
 		t.Run(testCase.name, func(t *testing.T) {
-			vms, fc := initVMTest()
-			_, err := vms.Create(context.Background(), testCase.virtualMachine, metav1.CreateOptions{})
+			c, fc := initVMTest()
+			_, err := c.CreateVirtualMachine(context.Background(), testCase.virtualMachine)
 			assert.NoError(t, err)
 			if testCase.deleteFunc != nil {
 				fc.PrependReactor("delete", "*", testCase.deleteFunc)
 			}
-			err = vms.Delete(context.Background(), testCase.virtualMachine.Name, metav1.DeleteOptions{})
+			err = c.DeleteVirtualMachine(context.Background(), testCase.virtualMachine.Namespace, testCase.virtualMachine.Name)
 			if testCase.expectedErr {
 				assert.Error(t, err)
 			} else {
@@ -215,7 +240,8 @@ func TestVMGet(t *testing.T) {
 			name: "Get: when everything is ok",
 			virtualMachine: &vmopv1.VirtualMachine{
 				ObjectMeta: metav1.ObjectMeta{
-					Name: "test-vm",
+					Name:      "test-vm",
+					Namespace: testNS,
 				},
 				Spec: vmopv1.VirtualMachineSpec{
 					ImageName: "test-image",
@@ -234,7 +260,8 @@ func TestVMGet(t *testing.T) {
 			name: "Get: when get error",
 			virtualMachine: &vmopv1.VirtualMachine{
 				ObjectMeta: metav1.ObjectMeta{
-					Name: "test-vm-error",
+					Name:      "test-vm-error",
+					Namespace: testNS,
 				},
 				Spec: vmopv1.VirtualMachineSpec{
 					ImageName: "test-image",
@@ -250,13 +277,13 @@ func TestVMGet(t *testing.T) {
 
 	for _, testCase := range testCases {
 		t.Run(testCase.name, func(t *testing.T) {
-			vms, fc := initVMTest()
-			_, err := vms.Create(context.Background(), testCase.virtualMachine, metav1.CreateOptions{})
+			c, fc := initVMTest()
+			_, err := c.CreateVirtualMachine(context.Background(), testCase.virtualMachine)
 			assert.NoError(t, err)
 			if testCase.getFunc != nil {
 				fc.PrependReactor("get", "*", testCase.getFunc)
 			}
-			actualVM, err := vms.Get(context.Background(), testCase.virtualMachine.Name, metav1.GetOptions{})
+			actualVM, err := c.GetVirtualMachine(context.Background(), testCase.virtualMachine.Namespace, testCase.virtualMachine.Name)
 			if testCase.expectedErr {
 				assert.Error(t, err)
 			} else {
@@ -280,12 +307,8 @@ func TestVMList(t *testing.T) {
 			virtualMachineList: &vmopv1.VirtualMachineList{
 				Items: []vmopv1.VirtualMachine{
 					{
-						ObjectMeta: metav1.ObjectMeta{
-							Name: "test-vm",
-						},
-						Spec: vmopv1.VirtualMachineSpec{
-							ImageName: "test-image",
-						},
+						ObjectMeta: metav1.ObjectMeta{Name: "test-vm", Namespace: testNS},
+						Spec:       vmopv1.VirtualMachineSpec{ImageName: "test-image"},
 					},
 				},
 			},
@@ -296,20 +319,12 @@ func TestVMList(t *testing.T) {
 			virtualMachineList: &vmopv1.VirtualMachineList{
 				Items: []vmopv1.VirtualMachine{
 					{
-						ObjectMeta: metav1.ObjectMeta{
-							Name: "test-vm",
-						},
-						Spec: vmopv1.VirtualMachineSpec{
-							ImageName: "test-image",
-						},
+						ObjectMeta: metav1.ObjectMeta{Name: "test-vm", Namespace: testNS},
+						Spec:       vmopv1.VirtualMachineSpec{ImageName: "test-image"},
 					},
 					{
-						ObjectMeta: metav1.ObjectMeta{
-							Name: "test-vm-2",
-						},
-						Spec: vmopv1.VirtualMachineSpec{
-							ImageName: "test-image",
-						},
+						ObjectMeta: metav1.ObjectMeta{Name: "test-vm-2", Namespace: testNS},
+						Spec:       vmopv1.VirtualMachineSpec{ImageName: "test-image"},
 					},
 				},
 			},
@@ -327,12 +342,8 @@ func TestVMList(t *testing.T) {
 			virtualMachineList: &vmopv1.VirtualMachineList{
 				Items: []vmopv1.VirtualMachine{
 					{
-						ObjectMeta: metav1.ObjectMeta{
-							Name: "test-vm",
-						},
-						Spec: vmopv1.VirtualMachineSpec{
-							ImageName: "test-image",
-						},
+						ObjectMeta: metav1.ObjectMeta{Name: "test-vm", Namespace: testNS},
+						Spec:       vmopv1.VirtualMachineSpec{ImageName: "test-image"},
 					},
 				},
 			},
@@ -346,16 +357,15 @@ func TestVMList(t *testing.T) {
 
 	for _, testCase := range testCases {
 		t.Run(testCase.name, func(t *testing.T) {
-			vms, fc := initVMTest()
-			for _, vm := range testCase.virtualMachineList.Items {
-				_, err := vms.Create(context.Background(), &vm, metav1.CreateOptions{})
+			c, fc := initVMTest()
+			for i := range testCase.virtualMachineList.Items {
+				_, err := c.CreateVirtualMachine(context.Background(), &testCase.virtualMachineList.Items[i])
 				assert.NoError(t, err)
-				if testCase.listFunc != nil {
-					fc.PrependReactor("list", "*", testCase.listFunc)
-				}
 			}
-
-			vmList, err := vms.List(context.Background(), metav1.ListOptions{})
+			if testCase.listFunc != nil {
+				fc.PrependReactor("list", "*", testCase.listFunc)
+			}
+			vmList, err := c.ListVirtualMachines(context.Background(), testNS, metav1.ListOptions{})
 			if testCase.expectedErr {
 				assert.Error(t, err)
 			} else {

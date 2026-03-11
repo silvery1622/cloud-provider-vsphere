@@ -29,6 +29,7 @@ import (
 
 	"k8s.io/cloud-provider-vsphere/pkg/cloudprovider/vsphereparavirtual/config"
 	"k8s.io/cloud-provider-vsphere/pkg/cloudprovider/vsphereparavirtual/controllers/routablepod"
+	"k8s.io/cloud-provider-vsphere/pkg/cloudprovider/vsphereparavirtual/vmoperator/factory"
 	"k8s.io/cloud-provider-vsphere/pkg/cloudprovider/vsphereparavirtual/vmservice"
 	cpcfg "k8s.io/cloud-provider-vsphere/pkg/common/config"
 	k8s "k8s.io/cloud-provider-vsphere/pkg/common/kubernetes"
@@ -66,6 +67,11 @@ var (
 
 	// serviceAnnotationPropagationEnabled if set to true, will propagate the service annotation to resource in supervisor cluster.
 	serviceAnnotationPropagationEnabled bool
+
+	// vmopAPIVersion is the VM Operator API version to use. Defaults to v1alpha2 for
+	// backward compatibility.
+	// Controlled via the --vm-operator-api-version flag.
+	vmopAPIVersion string
 )
 
 func init() {
@@ -94,6 +100,7 @@ func init() {
 	flag.BoolVar(&vpcModeEnabled, "enable-vpc-mode", false, "If true, routable pod controller will start with VPC mode. It is useful only when route controller is enabled in vsphereparavirtual mode")
 	flag.StringVar(&podIPPoolType, "pod-ip-pool-type", "", "Specify if Pod IP address is Public or Private routable in VPC network. Valid values are Public and Private")
 	flag.BoolVar(&serviceAnnotationPropagationEnabled, "enable-service-annotation-propagation", false, "If true, will propagate the service annotation to resource in supervisor cluster.")
+	flag.StringVar(&vmopAPIVersion, "vm-operator-api-version", factory.V1alpha2, fmt.Sprintf("the API version to use when communicating with VM Operator in supervisor mode. Valid values are: %s, %s", factory.V1alpha2, factory.V1alpha5))
 }
 
 // Creates new Controller node interface and returns
@@ -138,19 +145,25 @@ func (cp *VSphereParavirtual) Initialize(clientBuilder cloudprovider.ControllerC
 		klog.Fatalf("Failed to get cluster namespace: %v", err)
 	}
 
+	klog.V(0).Infof("Using VM Operator API version: %s", vmopAPIVersion)
+	vmopClient, err := factory.NewAdapter(vmopAPIVersion, kcfg)
+	if err != nil {
+		klog.Fatalf("Failed to create VM Operator adapter for version %s: %v", vmopAPIVersion, err)
+	}
+
 	routes, err := NewRoutes(clusterNS, kcfg, *cp.ownerReference, vpcModeEnabled, cp.informMgr.GetNodeLister())
 	if err != nil {
 		klog.Errorf("Failed to init Route: %v", err)
 	}
 	cp.routes = routes
 
-	lb, err := NewLoadBalancer(clusterNS, kcfg, cp.ownerReference, serviceAnnotationPropagationEnabled)
+	lb, err := NewLoadBalancer(clusterNS, vmopClient, cp.ownerReference, serviceAnnotationPropagationEnabled)
 	if err != nil {
 		klog.Errorf("Failed to init LoadBalancer: %v", err)
 	}
 	cp.loadBalancer = lb
 
-	instances, err := NewInstances(clusterNS, kcfg)
+	instances, err := NewInstances(clusterNS, vmopClient)
 	if err != nil {
 		klog.Errorf("Failed to init Instance: %v", err)
 	}
@@ -164,7 +177,7 @@ func (cp *VSphereParavirtual) Initialize(clientBuilder cloudprovider.ControllerC
 		}
 	}
 
-	zones, err := NewZones(clusterNS, kcfg)
+	zones, err := NewZones(clusterNS, vmopClient)
 	if err != nil {
 		klog.Errorf("Failed to init Zones: %v", err)
 	}

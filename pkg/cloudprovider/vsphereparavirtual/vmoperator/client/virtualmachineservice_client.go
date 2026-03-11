@@ -1,87 +1,95 @@
+/*
+Copyright 2021 The Kubernetes Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package client
 
 import (
 	"context"
 
 	vmopv1 "github.com/vmware-tanzu/vm-operator/api/v1alpha2"
-	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/client-go/dynamic"
-
-	"k8s.io/cloud-provider-vsphere/pkg/cloudprovider/vsphereparavirtual/vmoperator"
 )
 
-// virtualMachineServices implements VirtualMachineServiceInterface
-type virtualMachineServices struct {
-	client dynamic.Interface
-	ns     string
-}
-
-// newVirtualMachineServices returns a VirtualMachineServices
-func newVirtualMachineServices(c vmoperator.V1alpha2Interface, namespace string) *virtualMachineServices {
-	return &virtualMachineServices{
-		client: c.Client(),
-		ns:     namespace,
-	}
-}
-
-func (v *virtualMachineServices) Create(ctx context.Context, virtualMachineService *vmopv1.VirtualMachineService, opts v1.CreateOptions) (*vmopv1.VirtualMachineService, error) {
-	unstructuredObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(virtualMachineService)
+// GetVirtualMachineService fetches a VirtualMachineService by namespace and name.
+func (c *Client) GetVirtualMachineService(ctx context.Context, namespace, name string) (*vmopv1.VirtualMachineService, error) {
+	obj, err := c.dynamicClient.Resource(VirtualMachineServiceGVR).Namespace(namespace).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
 		return nil, err
 	}
+	vms := &vmopv1.VirtualMachineService{}
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(obj.UnstructuredContent(), vms); err != nil {
+		return nil, err
+	}
+	return vms, nil
+}
 
-	obj, err := v.client.Resource(VirtualMachineServiceGVR).Namespace(v.ns).Create(ctx, &unstructured.Unstructured{Object: unstructuredObj}, opts)
+// ListVirtualMachineServices lists VirtualMachineServices in the given namespace.
+func (c *Client) ListVirtualMachineServices(ctx context.Context, namespace string, opts metav1.ListOptions) (*vmopv1.VirtualMachineServiceList, error) {
+	obj, err := c.dynamicClient.Resource(VirtualMachineServiceGVR).Namespace(namespace).List(ctx, opts)
 	if err != nil {
 		return nil, err
 	}
-
-	createdVirtualMachineService := &vmopv1.VirtualMachineService{}
-	if err = runtime.DefaultUnstructuredConverter.FromUnstructured(obj.UnstructuredContent(), createdVirtualMachineService); err != nil {
-		return nil, err
+	list := &vmopv1.VirtualMachineServiceList{}
+	for i := range obj.Items {
+		vms := &vmopv1.VirtualMachineService{}
+		if err := runtime.DefaultUnstructuredConverter.FromUnstructured(obj.Items[i].UnstructuredContent(), vms); err != nil {
+			return nil, err
+		}
+		list.Items = append(list.Items, *vms)
 	}
-	return createdVirtualMachineService, nil
+	return list, nil
 }
 
-func (v *virtualMachineServices) Update(ctx context.Context, virtualMachineService *vmopv1.VirtualMachineService, opts v1.UpdateOptions) (*vmopv1.VirtualMachineService, error) {
-	unstructuredObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(virtualMachineService)
+// CreateVirtualMachineService creates a VirtualMachineService.
+func (c *Client) CreateVirtualMachineService(ctx context.Context, vms *vmopv1.VirtualMachineService) (*vmopv1.VirtualMachineService, error) {
+	unstructuredObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(vms)
 	if err != nil {
 		return nil, err
 	}
-
-	obj, err := v.client.Resource(VirtualMachineServiceGVR).Namespace(v.ns).Update(ctx, &unstructured.Unstructured{Object: unstructuredObj}, opts)
+	obj, err := c.dynamicClient.Resource(VirtualMachineServiceGVR).Namespace(vms.Namespace).Create(ctx, &unstructured.Unstructured{Object: unstructuredObj}, metav1.CreateOptions{})
 	if err != nil {
 		return nil, err
 	}
-
-	updatedVirtualMachineService := &vmopv1.VirtualMachineService{}
-	if err = runtime.DefaultUnstructuredConverter.FromUnstructured(obj.UnstructuredContent(), updatedVirtualMachineService); err != nil {
+	created := &vmopv1.VirtualMachineService{}
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(obj.UnstructuredContent(), created); err != nil {
 		return nil, err
 	}
-	return updatedVirtualMachineService, nil
+	return created, nil
 }
 
-func (v *virtualMachineServices) Delete(ctx context.Context, name string, opts v1.DeleteOptions) error {
-	return v.client.Resource(VirtualMachineServiceGVR).Namespace(v.ns).Delete(ctx, name, opts)
-}
-
-func (v *virtualMachineServices) Get(ctx context.Context, name string, opts v1.GetOptions) (*vmopv1.VirtualMachineService, error) {
-	virtualMachineService := &vmopv1.VirtualMachineService{}
-	if obj, err := v.client.Resource(VirtualMachineServiceGVR).Namespace(v.ns).Get(ctx, name, opts); err != nil {
-		return nil, err
-	} else if err = runtime.DefaultUnstructuredConverter.FromUnstructured(obj.UnstructuredContent(), virtualMachineService); err != nil {
+// UpdateVirtualMachineService updates a VirtualMachineService.
+func (c *Client) UpdateVirtualMachineService(ctx context.Context, vms *vmopv1.VirtualMachineService) (*vmopv1.VirtualMachineService, error) {
+	unstructuredObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(vms)
+	if err != nil {
 		return nil, err
 	}
-	return virtualMachineService, nil
-}
-
-func (v *virtualMachineServices) List(ctx context.Context, opts v1.ListOptions) (*vmopv1.VirtualMachineServiceList, error) {
-	virtualMachineServiceList := &vmopv1.VirtualMachineServiceList{}
-	if obj, err := v.client.Resource(VirtualMachineServiceGVR).Namespace(v.ns).List(ctx, opts); err != nil {
-		return nil, err
-	} else if err = runtime.DefaultUnstructuredConverter.FromUnstructured(obj.UnstructuredContent(), virtualMachineServiceList); err != nil {
+	obj, err := c.dynamicClient.Resource(VirtualMachineServiceGVR).Namespace(vms.Namespace).Update(ctx, &unstructured.Unstructured{Object: unstructuredObj}, metav1.UpdateOptions{})
+	if err != nil {
 		return nil, err
 	}
-	return virtualMachineServiceList, nil
+	updated := &vmopv1.VirtualMachineService{}
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(obj.UnstructuredContent(), updated); err != nil {
+		return nil, err
+	}
+	return updated, nil
+}
+
+// DeleteVirtualMachineService deletes a VirtualMachineService by namespace and name.
+func (c *Client) DeleteVirtualMachineService(ctx context.Context, namespace, name string) error {
+	return c.dynamicClient.Resource(VirtualMachineServiceGVR).Namespace(namespace).Delete(ctx, name, metav1.DeleteOptions{})
 }
