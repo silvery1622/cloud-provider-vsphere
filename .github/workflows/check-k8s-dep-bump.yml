@@ -1,0 +1,72 @@
+name: Check K8s dependency bump safety
+
+on:
+  pull_request:
+    branches:
+      - master
+      - release-*
+    paths:
+      - 'go.mod'
+
+permissions:
+  contents: read
+
+jobs:
+  check-k8s-bump:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR
+        uses: actions/checkout@v6.0.2
+
+      - name: Checkout base branch go.mod
+        uses: actions/checkout@v6.0.2
+        with:
+          ref: ${{ github.base_ref }}
+          path: base
+
+      - name: Check for unwanted k8s.io minor version bump
+        run: |
+          extract_k8s_minor() {
+            grep 'k8s.io/api v' "$1" | head -1 | grep -oP 'v\K[0-9]+\.[0-9]+'
+          }
+
+          BASE_MINOR=$(extract_k8s_minor base/go.mod)
+          PR_MINOR=$(extract_k8s_minor go.mod)
+
+          if [ -z "$BASE_MINOR" ] || [ -z "$PR_MINOR" ]; then
+            echo "Could not extract k8s.io/api version, skipping check."
+            exit 0
+          fi
+
+          echo "Base branch k8s.io minor: $BASE_MINOR"
+          echo "PR k8s.io minor:          $PR_MINOR"
+
+          if [ "$BASE_MINOR" = "$PR_MINOR" ]; then
+            echo "OK: k8s.io minor version unchanged."
+            exit 0
+          fi
+
+          # Minor version changed — check if this is a release branch
+          if [[ "$GITHUB_BASE_REF" == release-* ]]; then
+            echo "BLOCKED: k8s.io minor version bump ($BASE_MINOR -> $PR_MINOR) is not allowed on release branch $GITHUB_BASE_REF."
+            echo "Release branches must stay on their designated k8s.io minor version."
+            exit 1
+          fi
+
+          # On master, check that the corresponding release branch exists before allowing the bump
+          RELEASE_BRANCH="release-1.${BASE_MINOR#0.}"
+          echo "Checking if $RELEASE_BRANCH exists before allowing bump on master..."
+
+          git ls-remote --exit-code --heads origin "refs/heads/$RELEASE_BRANCH" > /dev/null 2>&1 && BRANCH_EXISTS=true || BRANCH_EXISTS=false
+
+          if [ "$BRANCH_EXISTS" = "true" ]; then
+            echo "OK: $RELEASE_BRANCH exists. Safe to bump k8s.io minor version on master ($BASE_MINOR -> $PR_MINOR)."
+          else
+            echo "BLOCKED: $RELEASE_BRANCH does not exist yet!"
+            echo "You must cut $RELEASE_BRANCH (to lock in k8s.io v$BASE_MINOR.x) before bumping master to v$PR_MINOR."
+            echo ""
+            echo "Expected workflow:"
+            echo "  1. Cut $RELEASE_BRANCH from master (stays on k8s.io v$BASE_MINOR.x)"
+            echo "  2. Then bump master to k8s.io v$PR_MINOR.x"
+            exit 1
+          fi
