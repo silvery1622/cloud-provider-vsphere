@@ -248,6 +248,12 @@ func (s *vmService) Update(ctx context.Context, service *v1.Service, clusterName
 	if len(desiredAnnotations) == 0 {
 		desiredAnnotations = nil
 	}
+	existingIPFams := existing.Spec.IPFamilies
+	if len(existingIPFams) == 0 {
+		existingIPFams = nil
+	}
+	desiredIPFams := cloneIPFamilies(service.Spec.IPFamilies)
+	servicePolicy := cloneIPFamilyPolicy(service.Spec.IPFamilyPolicy)
 
 	var needsUpdate bool
 	if !reflect.DeepEqual(existing.Spec.Ports, ports) {
@@ -262,6 +268,12 @@ func (s *vmService) Update(ctx context.Context, service *v1.Service, clusterName
 	if !reflect.DeepEqual(existingAnnotations, desiredAnnotations) {
 		needsUpdate = true
 	}
+	if !reflect.DeepEqual(existingIPFams, desiredIPFams) {
+		needsUpdate = true
+	}
+	if !reflect.DeepEqual(existing.Spec.IPFamilyPolicy, servicePolicy) {
+		needsUpdate = true
+	}
 
 	if needsUpdate {
 		update := &vmoptypes.VirtualMachineServiceInfo{
@@ -270,6 +282,8 @@ func (s *vmService) Update(ctx context.Context, service *v1.Service, clusterName
 				Ports:                    ports,
 				LoadBalancerIP:           service.Spec.LoadBalancerIP,
 				LoadBalancerSourceRanges: serviceRanges,
+				IPFamilies:               desiredIPFams,
+				IPFamilyPolicy:           servicePolicy,
 			},
 		}
 		result, err := s.vmClient.VirtualMachineServices().Update(ctx, s.namespace, existing.Name, update)
@@ -350,6 +364,8 @@ func (s *vmService) lbServiceToVMServiceInfo(service *v1.Service, clusterName st
 			Selector:                 selector,
 			LoadBalancerIP:           service.Spec.LoadBalancerIP,
 			LoadBalancerSourceRanges: service.Spec.LoadBalancerSourceRanges,
+			IPFamilies:               cloneIPFamilies(service.Spec.IPFamilies),
+			IPFamilyPolicy:           cloneIPFamilyPolicy(service.Spec.IPFamilyPolicy),
 		},
 	}
 
@@ -386,6 +402,23 @@ func getVMServiceAnnotations(service *v1.Service, serviceAnnotationPropagationEn
 	}
 
 	return annotations
+}
+
+func cloneIPFamilies(f []v1.IPFamily) []v1.IPFamily {
+	if len(f) == 0 {
+		return nil
+	}
+	out := make([]v1.IPFamily, len(f))
+	copy(out, f)
+	return out
+}
+
+func cloneIPFamilyPolicy(p *v1.IPFamilyPolicyType) *v1.IPFamilyPolicyType {
+	if p == nil {
+		return nil
+	}
+	v := *p
+	return &v
 }
 
 func getVMServiceIP(vmService *vmoptypes.VirtualMachineServiceInfo) string {

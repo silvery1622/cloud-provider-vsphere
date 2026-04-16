@@ -36,6 +36,7 @@ import (
 	adapterv2 "k8s.io/cloud-provider-vsphere/pkg/cloudprovider/vsphereparavirtual/vmoperator/adapter/v1alpha2"
 	fakev2 "k8s.io/cloud-provider-vsphere/pkg/cloudprovider/vsphereparavirtual/vmoperator/adapter/v1alpha2/fake"
 	clientv2 "k8s.io/cloud-provider-vsphere/pkg/cloudprovider/vsphereparavirtual/vmoperator/provider/v1alpha2"
+	vmoptypes "k8s.io/cloud-provider-vsphere/pkg/cloudprovider/vsphereparavirtual/vmoperator/types"
 	"k8s.io/cloud-provider-vsphere/pkg/cloudprovider/vsphereparavirtual/vmservice"
 )
 
@@ -365,6 +366,82 @@ func TestEnsureLoadBalancer_DeleteLB(t *testing.T) {
 			if err != nil {
 				assert.Equal(t, err.Error(), testCase.expectErr)
 			}
+		})
+	}
+}
+
+func TestToStatus(t *testing.T) {
+	testCases := []struct {
+		name     string
+		ingress  []vmoptypes.LoadBalancerIngress
+		expected []v1.LoadBalancerIngress
+	}{
+		{
+			name:     "empty ingress list returns empty status",
+			ingress:  nil,
+			expected: nil,
+		},
+		{
+			name: "single IPv4 ingress",
+			ingress: []vmoptypes.LoadBalancerIngress{
+				{IP: "10.0.0.1"},
+			},
+			expected: []v1.LoadBalancerIngress{
+				{IP: "10.0.0.1"},
+			},
+		},
+		{
+			name: "IPv4 and IPv6 dual-stack ingress",
+			ingress: []vmoptypes.LoadBalancerIngress{
+				{IP: "10.0.0.1"},
+				{IP: "fd00::1"},
+			},
+			expected: []v1.LoadBalancerIngress{
+				{IP: "10.0.0.1"},
+				{IP: "fd00::1"},
+			},
+		},
+		{
+			name: "hostname-only ingress",
+			ingress: []vmoptypes.LoadBalancerIngress{
+				{Hostname: "lb.example.com"},
+			},
+			expected: []v1.LoadBalancerIngress{
+				{Hostname: "lb.example.com"},
+			},
+		},
+		{
+			name: "mixed IP and hostname",
+			ingress: []vmoptypes.LoadBalancerIngress{
+				{IP: "10.0.0.1", Hostname: "lb.example.com"},
+			},
+			expected: []v1.LoadBalancerIngress{
+				{IP: "10.0.0.1", Hostname: "lb.example.com"},
+			},
+		},
+		{
+			name: "empty entries are skipped",
+			ingress: []vmoptypes.LoadBalancerIngress{
+				{IP: "10.0.0.1"},
+				{},
+				{IP: "fd00::1"},
+			},
+			expected: []v1.LoadBalancerIngress{
+				{IP: "10.0.0.1"},
+				{IP: "fd00::1"},
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			info := &vmoptypes.VirtualMachineServiceInfo{
+				Status: vmoptypes.VirtualMachineServiceStatus{
+					LoadBalancerIngress: tc.ingress,
+				},
+			}
+			st := toStatus(info)
+			assert.Equal(t, tc.expected, st.Ingress)
 		})
 	}
 }

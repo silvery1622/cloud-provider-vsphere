@@ -14,13 +14,13 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package v1alpha5 provides a dynamic client for the VM Operator v1alpha5 API.
-package v1alpha5
+// Package v1alpha6 provides a dynamic client for the VM Operator v1alpha6 API.
+package v1alpha6
 
 import (
 	"context"
 
-	vmopv5 "github.com/vmware-tanzu/vm-operator/api/v1alpha5"
+	vmopv6 "github.com/vmware-tanzu/vm-operator/api/v1alpha6"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -29,26 +29,26 @@ import (
 	"k8s.io/client-go/rest"
 )
 
-// GVRs for the VM Operator v1alpha5 resources used by the CPI.
+// GVRs for the VM Operator v1alpha6 resources used by the CPI.
 var (
 	VirtualMachineGVR = schema.GroupVersionResource{
 		Group:    "vmoperator.vmware.com",
-		Version:  "v1alpha5",
+		Version:  "v1alpha6",
 		Resource: "virtualmachines",
 	}
 	VirtualMachineServiceGVR = schema.GroupVersionResource{
 		Group:    "vmoperator.vmware.com",
-		Version:  "v1alpha5",
+		Version:  "v1alpha6",
 		Resource: "virtualmachineservices",
 	}
 )
 
-// Client wraps a dynamic client for the v1alpha5 API group.
+// Client wraps a dynamic client for the v1alpha6 API group.
 type Client struct {
 	dynamicClient dynamic.Interface
 }
 
-// NewForConfig creates a new v1alpha5 Client from the given REST config.
+// NewForConfig creates a new v1alpha6 Client from the given REST config.
 func NewForConfig(cfg *rest.Config) (*Client, error) {
 	dc, err := dynamic.NewForConfig(cfg)
 	if err != nil {
@@ -64,12 +64,12 @@ func NewWithDynamicClient(dc dynamic.Interface) *Client {
 }
 
 // GetVirtualMachine fetches a VirtualMachine by namespace and name.
-func (c *Client) GetVirtualMachine(ctx context.Context, namespace, name string) (*vmopv5.VirtualMachine, error) {
+func (c *Client) GetVirtualMachine(ctx context.Context, namespace, name string) (*vmopv6.VirtualMachine, error) {
 	obj, err := c.dynamicClient.Resource(VirtualMachineGVR).Namespace(namespace).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
 		return nil, err
 	}
-	vm := &vmopv5.VirtualMachine{}
+	vm := &vmopv6.VirtualMachine{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(obj.UnstructuredContent(), vm); err != nil {
 		return nil, err
 	}
@@ -77,16 +77,16 @@ func (c *Client) GetVirtualMachine(ctx context.Context, namespace, name string) 
 }
 
 // ListVirtualMachines lists VirtualMachines in the given namespace.
-func (c *Client) ListVirtualMachines(ctx context.Context, namespace string, opts metav1.ListOptions) (*vmopv5.VirtualMachineList, error) {
+func (c *Client) ListVirtualMachines(ctx context.Context, namespace string, opts metav1.ListOptions) (*vmopv6.VirtualMachineList, error) {
 	obj, err := c.dynamicClient.Resource(VirtualMachineGVR).Namespace(namespace).List(ctx, opts)
 	if err != nil {
 		return nil, err
 	}
-	list := &vmopv5.VirtualMachineList{
-		Items: make([]vmopv5.VirtualMachine, 0, len(obj.Items)),
+	list := &vmopv6.VirtualMachineList{
+		Items: make([]vmopv6.VirtualMachine, 0, len(obj.Items)),
 	}
 	for i := range obj.Items {
-		vm := &vmopv5.VirtualMachine{}
+		vm := &vmopv6.VirtualMachine{}
 		if err := runtime.DefaultUnstructuredConverter.FromUnstructured(obj.Items[i].UnstructuredContent(), vm); err != nil {
 			return nil, err
 		}
@@ -96,29 +96,39 @@ func (c *Client) ListVirtualMachines(ctx context.Context, namespace string, opts
 }
 
 // GetVirtualMachineService fetches a VirtualMachineService by namespace and name.
-func (c *Client) GetVirtualMachineService(ctx context.Context, namespace, name string) (*vmopv5.VirtualMachineService, error) {
+// Note: the v1alpha6 adapter bypasses this method and calls Dynamic().Resource(...).Get
+// directly so that readDualStackFromUnstructured can populate ipFamilies and
+// ipFamilyPolicy from the raw unstructured object. Callers that need dual-stack
+// fields must use Dynamic().Resource(VirtualMachineServiceGVR).Namespace(ns).Get(...)
+// instead of this method.
+func (c *Client) GetVirtualMachineService(ctx context.Context, namespace, name string) (*vmopv6.VirtualMachineService, error) {
 	obj, err := c.dynamicClient.Resource(VirtualMachineServiceGVR).Namespace(namespace).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
 		return nil, err
 	}
-	vmService := &vmopv5.VirtualMachineService{}
+	vmService := &vmopv6.VirtualMachineService{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(obj.UnstructuredContent(), vmService); err != nil {
 		return nil, err
 	}
 	return vmService, nil
 }
 
+// Dynamic returns the underlying dynamic client for unstructured access (used by the v1alpha6 adapter for dual-stack fields).
+func (c *Client) Dynamic() dynamic.Interface {
+	return c.dynamicClient
+}
+
 // ListVirtualMachineServices lists VirtualMachineServices in the given namespace.
-func (c *Client) ListVirtualMachineServices(ctx context.Context, namespace string, opts metav1.ListOptions) (*vmopv5.VirtualMachineServiceList, error) {
+func (c *Client) ListVirtualMachineServices(ctx context.Context, namespace string, opts metav1.ListOptions) (*vmopv6.VirtualMachineServiceList, error) {
 	obj, err := c.dynamicClient.Resource(VirtualMachineServiceGVR).Namespace(namespace).List(ctx, opts)
 	if err != nil {
 		return nil, err
 	}
-	list := &vmopv5.VirtualMachineServiceList{
-		Items: make([]vmopv5.VirtualMachineService, 0, len(obj.Items)),
+	list := &vmopv6.VirtualMachineServiceList{
+		Items: make([]vmopv6.VirtualMachineService, 0, len(obj.Items)),
 	}
 	for i := range obj.Items {
-		vmService := &vmopv5.VirtualMachineService{}
+		vmService := &vmopv6.VirtualMachineService{}
 		if err := runtime.DefaultUnstructuredConverter.FromUnstructured(obj.Items[i].UnstructuredContent(), vmService); err != nil {
 			return nil, err
 		}
@@ -127,10 +137,14 @@ func (c *Client) ListVirtualMachineServices(ctx context.Context, namespace strin
 	return list, nil
 }
 
-// CreateVirtualMachineService creates a VirtualMachineService.
+// CreateVirtualMachineService creates a VirtualMachineService using the typed path.
 // apiVersion and kind are set explicitly because ToUnstructured does not populate
 // them when TypeMeta is unset, which would cause the API server to reject the request.
-func (c *Client) CreateVirtualMachineService(ctx context.Context, vmService *vmopv5.VirtualMachineService) (*vmopv5.VirtualMachineService, error) {
+// Note: the v1alpha6 adapter bypasses this method and calls Dynamic().Resource(...).Create
+// directly so that dual-stack fields (ipFamilies, ipFamilyPolicy) can be injected via
+// the unstructured map before the request is sent. This method is kept for completeness
+// and for callers that do not require dual-stack field injection.
+func (c *Client) CreateVirtualMachineService(ctx context.Context, vmService *vmopv6.VirtualMachineService) (*vmopv6.VirtualMachineService, error) {
 	unstructuredObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(vmService)
 	if err != nil {
 		return nil, err
@@ -141,16 +155,17 @@ func (c *Client) CreateVirtualMachineService(ctx context.Context, vmService *vmo
 	if err != nil {
 		return nil, err
 	}
-	created := &vmopv5.VirtualMachineService{}
+	created := &vmopv6.VirtualMachineService{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(obj.UnstructuredContent(), created); err != nil {
 		return nil, err
 	}
 	return created, nil
 }
 
-// UpdateVirtualMachineService updates a VirtualMachineService.
-// apiVersion and kind are set explicitly for the same reason as in Create.
-func (c *Client) UpdateVirtualMachineService(ctx context.Context, vmService *vmopv5.VirtualMachineService) (*vmopv5.VirtualMachineService, error) {
+// UpdateVirtualMachineService updates a VirtualMachineService using the typed path.
+// apiVersion and kind are set explicitly for the same reason as in CreateVirtualMachineService.
+// The v1alpha6 adapter bypasses this method for the same reason as CreateVirtualMachineService.
+func (c *Client) UpdateVirtualMachineService(ctx context.Context, vmService *vmopv6.VirtualMachineService) (*vmopv6.VirtualMachineService, error) {
 	unstructuredObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(vmService)
 	if err != nil {
 		return nil, err
@@ -161,7 +176,7 @@ func (c *Client) UpdateVirtualMachineService(ctx context.Context, vmService *vmo
 	if err != nil {
 		return nil, err
 	}
-	updated := &vmopv5.VirtualMachineService{}
+	updated := &vmopv6.VirtualMachineService{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(obj.UnstructuredContent(), updated); err != nil {
 		return nil, err
 	}

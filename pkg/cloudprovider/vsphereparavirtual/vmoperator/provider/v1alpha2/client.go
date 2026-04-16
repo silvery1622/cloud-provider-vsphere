@@ -77,11 +77,7 @@ func (c *Client) GetVirtualMachine(ctx context.Context, namespace, name string) 
 }
 
 // ListVirtualMachines lists VirtualMachines in the given namespace.
-// ResourceVersion="0" defaults to reading from the API server's watch cache.
 func (c *Client) ListVirtualMachines(ctx context.Context, namespace string, opts metav1.ListOptions) (*vmopv1.VirtualMachineList, error) {
-	if opts.ResourceVersion == "" {
-		opts.ResourceVersion = "0"
-	}
 	obj, err := c.dynamicClient.Resource(VirtualMachineGVR).Namespace(namespace).List(ctx, opts)
 	if err != nil {
 		return nil, err
@@ -113,11 +109,7 @@ func (c *Client) GetVirtualMachineService(ctx context.Context, namespace, name s
 }
 
 // ListVirtualMachineServices lists VirtualMachineServices in the given namespace.
-// ResourceVersion="0" defaults to reading from the API server's watch cache.
 func (c *Client) ListVirtualMachineServices(ctx context.Context, namespace string, opts metav1.ListOptions) (*vmopv1.VirtualMachineServiceList, error) {
-	if opts.ResourceVersion == "" {
-		opts.ResourceVersion = "0"
-	}
 	obj, err := c.dynamicClient.Resource(VirtualMachineServiceGVR).Namespace(namespace).List(ctx, opts)
 	if err != nil {
 		return nil, err

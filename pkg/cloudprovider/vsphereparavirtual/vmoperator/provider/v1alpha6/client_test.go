@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package v1alpha2
+package v1alpha6
 
 import (
 	"context"
@@ -22,7 +22,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
-	vmopv1 "github.com/vmware-tanzu/vm-operator/api/v1alpha2"
+	vmopv6 "github.com/vmware-tanzu/vm-operator/api/v1alpha6"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -38,14 +38,14 @@ const testNS = "test-ns"
 
 func newTestClient() (*Client, *dynamicfake.FakeDynamicClient) {
 	scheme := runtime.NewScheme()
-	_ = vmopv1.AddToScheme(scheme)
+	_ = vmopv6.AddToScheme(scheme)
 	fc := dynamicfake.NewSimpleDynamicClient(scheme)
 	return NewWithDynamicClient(fc), fc
 }
 
 // seedVM seeds a VirtualMachine directly into the fake dynamic client.
 // apiVersion and kind must be set explicitly to match what a real API server stores.
-func seedVM(t *testing.T, fc *dynamicfake.FakeDynamicClient, vm *vmopv1.VirtualMachine) {
+func seedVM(t *testing.T, fc *dynamicfake.FakeDynamicClient, vm *vmopv6.VirtualMachine) {
 	t.Helper()
 	obj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(vm)
 	assert.NoError(t, err)
@@ -91,9 +91,9 @@ func TestGetVirtualMachine(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			c, fc := newTestClient()
-			seedVM(t, fc, &vmopv1.VirtualMachine{
+			seedVM(t, fc, &vmopv6.VirtualMachine{
 				ObjectMeta: metav1.ObjectMeta{Name: tc.seedName, Namespace: testNS},
-				Status:     vmopv1.VirtualMachineStatus{BiosUUID: "bios-1"},
+				Status:     vmopv6.VirtualMachineStatus{BiosUUID: "bios-1"},
 			})
 			if tc.getFunc != nil {
 				fc.PrependReactor("get", "virtualmachines", tc.getFunc)
@@ -143,7 +143,7 @@ func TestListVirtualMachines(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			c, fc := newTestClient()
 			for _, name := range tc.seedVMs {
-				seedVM(t, fc, &vmopv1.VirtualMachine{
+				seedVM(t, fc, &vmopv6.VirtualMachine{
 					ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNS},
 				})
 			}
@@ -177,7 +177,7 @@ func TestVMSCreateSetsGVK(t *testing.T) {
 		capturedKind = obj.GetKind()
 		return false, nil, nil
 	})
-	_, err := c.CreateVirtualMachineService(context.Background(), &vmopv1.VirtualMachineService{
+	_, err := c.CreateVirtualMachineService(context.Background(), &vmopv6.VirtualMachineService{
 		ObjectMeta: metav1.ObjectMeta{Name: "test-vms", Namespace: testNS},
 	})
 	assert.NoError(t, err)
@@ -190,7 +190,7 @@ func TestVMSCreateSetsGVK(t *testing.T) {
 // TestVMSUpdateSetsGVK verifies that UpdateVirtualMachineService sets apiVersion and kind.
 func TestVMSUpdateSetsGVK(t *testing.T) {
 	c, fc := newTestClient()
-	_, err := c.CreateVirtualMachineService(context.Background(), &vmopv1.VirtualMachineService{
+	_, err := c.CreateVirtualMachineService(context.Background(), &vmopv6.VirtualMachineService{
 		ObjectMeta: metav1.ObjectMeta{Name: "test-vms", Namespace: testNS},
 	})
 	assert.NoError(t, err)
@@ -202,7 +202,7 @@ func TestVMSUpdateSetsGVK(t *testing.T) {
 		capturedKind = obj.GetKind()
 		return false, nil, nil
 	})
-	_, err = c.UpdateVirtualMachineService(context.Background(), &vmopv1.VirtualMachineService{
+	_, err = c.UpdateVirtualMachineService(context.Background(), &vmopv6.VirtualMachineService{
 		ObjectMeta: metav1.ObjectMeta{Name: "test-vms", Namespace: testNS},
 	})
 	assert.NoError(t, err)
@@ -240,10 +240,10 @@ func TestVirtualMachineServiceCRUD(t *testing.T) {
 				fc.PrependReactor("create", "virtualmachineservices", tc.createFunc)
 			}
 
-			vmService := &vmopv1.VirtualMachineService{
+			vmService := &vmopv6.VirtualMachineService{
 				ObjectMeta: metav1.ObjectMeta{Name: tc.vmsName, Namespace: testNS},
-				Spec: vmopv1.VirtualMachineServiceSpec{
-					Type: vmopv1.VirtualMachineServiceTypeLoadBalancer,
+				Spec: vmopv6.VirtualMachineServiceSpec{
+					Type: vmopv6.VirtualMachineServiceTypeLoadBalancer,
 				},
 			}
 

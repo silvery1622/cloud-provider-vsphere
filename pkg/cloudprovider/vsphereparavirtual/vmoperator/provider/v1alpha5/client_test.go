@@ -357,22 +357,22 @@ func (r *listOptsSpyResource) ApplyStatus(_ context.Context, _ string, _ *unstru
 	return nil, nil
 }
 
-// TestListVirtualMachines_SetsResourceVersion verifies that ListVirtualMachines
-// always sets ResourceVersion="0" on the list request so the API server serves
-// the response from its watch cache rather than performing a quorum read from etcd.
-func TestListVirtualMachines_SetsResourceVersion(t *testing.T) {
+// TestListVirtualMachines_ResourceVersionPassThrough verifies that
+// ListVirtualMachines passes the caller's ResourceVersion to the API server
+// unchanged, without injecting any default value.
+func TestListVirtualMachines_ResourceVersionPassThrough(t *testing.T) {
 	testCases := []struct {
 		name       string
 		inputRV    string
 		expectedRV string
 	}{
 		{
-			name:       "sets ResourceVersion=0 when caller passes empty string",
+			name:       "passes through empty ResourceVersion unchanged",
 			inputRV:    "",
-			expectedRV: "0",
+			expectedRV: "",
 		},
 		{
-			name:       "preserves caller-supplied ResourceVersion when non-empty",
+			name:       "passes through non-empty ResourceVersion unchanged",
 			inputRV:    "42",
 			expectedRV: "42",
 		},
@@ -384,26 +384,27 @@ func TestListVirtualMachines_SetsResourceVersion(t *testing.T) {
 			c := NewWithDynamicClient(spy)
 			_, _ = c.ListVirtualMachines(context.Background(), testNS, metav1.ListOptions{ResourceVersion: tc.inputRV})
 			assert.Equal(t, tc.expectedRV, spy.capturedRV,
-				"ListVirtualMachines must send ResourceVersion=%q to the API server", tc.expectedRV)
+				"ListVirtualMachines must pass ResourceVersion=%q to the API server unchanged", tc.expectedRV)
 		})
 	}
 }
 
-// TestListVirtualMachineServices_SetsResourceVersion verifies that
-// ListVirtualMachineServices always sets ResourceVersion="0" on the list request.
-func TestListVirtualMachineServices_SetsResourceVersion(t *testing.T) {
+// TestListVirtualMachineServices_ResourceVersionPassThrough verifies that
+// ListVirtualMachineServices passes the caller's ResourceVersion to the API
+// server unchanged, without injecting any default value.
+func TestListVirtualMachineServices_ResourceVersionPassThrough(t *testing.T) {
 	testCases := []struct {
 		name       string
 		inputRV    string
 		expectedRV string
 	}{
 		{
-			name:       "sets ResourceVersion=0 when caller passes empty string",
+			name:       "passes through empty ResourceVersion unchanged",
 			inputRV:    "",
-			expectedRV: "0",
+			expectedRV: "",
 		},
 		{
-			name:       "preserves caller-supplied ResourceVersion when non-empty",
+			name:       "passes through non-empty ResourceVersion unchanged",
 			inputRV:    "42",
 			expectedRV: "42",
 		},
@@ -415,7 +416,7 @@ func TestListVirtualMachineServices_SetsResourceVersion(t *testing.T) {
 			c := NewWithDynamicClient(spy)
 			_, _ = c.ListVirtualMachineServices(context.Background(), testNS, metav1.ListOptions{ResourceVersion: tc.inputRV})
 			assert.Equal(t, tc.expectedRV, spy.capturedRV,
-				"ListVirtualMachineServices must send ResourceVersion=%q to the API server", tc.expectedRV)
+				"ListVirtualMachineServices must pass ResourceVersion=%q to the API server unchanged", tc.expectedRV)
 		})
 	}
 }
