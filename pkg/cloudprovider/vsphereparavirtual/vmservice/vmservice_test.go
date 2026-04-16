@@ -875,6 +875,101 @@ func TestUpdateVMService_ServiceAnnotationPropagation(t *testing.T) {
 	}
 }
 
+func TestUpdateVMService_IPFamilyChanges(t *testing.T) {
+	policyPtr := func(p v1.IPFamilyPolicyType) *v1.IPFamilyPolicyType { return &p }
+
+	testCases := []struct {
+		name               string
+		existingFamilies   []v1.IPFamily
+		existingPolicy     *v1.IPFamilyPolicyType
+		desiredFamilies    []v1.IPFamily
+		desiredPolicy      *v1.IPFamilyPolicyType
+		expectUpdateCalled bool
+	}{
+		{
+			name:               "both nil: no update triggered",
+			existingFamilies:   nil,
+			existingPolicy:     nil,
+			desiredFamilies:    nil,
+			desiredPolicy:      nil,
+			expectUpdateCalled: false,
+		},
+		{
+			name:               "IPFamily added from nil triggers update",
+			existingFamilies:   nil,
+			existingPolicy:     nil,
+			desiredFamilies:    []v1.IPFamily{v1.IPv4Protocol},
+			desiredPolicy:      nil,
+			expectUpdateCalled: true,
+		},
+		{
+			name:               "IPFamily list extended triggers update",
+			existingFamilies:   []v1.IPFamily{v1.IPv4Protocol},
+			existingPolicy:     nil,
+			desiredFamilies:    []v1.IPFamily{v1.IPv4Protocol, v1.IPv6Protocol},
+			desiredPolicy:      nil,
+			expectUpdateCalled: true,
+		},
+		{
+			name:               "IPFamilyPolicy nil to PreferDualStack triggers update",
+			existingFamilies:   nil,
+			existingPolicy:     nil,
+			desiredFamilies:    nil,
+			desiredPolicy:      policyPtr(v1.IPFamilyPolicyPreferDualStack),
+			expectUpdateCalled: true,
+		},
+		{
+			name:               "IPFamilyPolicy value change triggers update",
+			existingFamilies:   nil,
+			existingPolicy:     policyPtr(v1.IPFamilyPolicySingleStack),
+			desiredFamilies:    nil,
+			desiredPolicy:      policyPtr(v1.IPFamilyPolicyPreferDualStack),
+			expectUpdateCalled: true,
+		},
+		{
+			name:               "same dual-stack families and policy: no update triggered",
+			existingFamilies:   []v1.IPFamily{v1.IPv4Protocol, v1.IPv6Protocol},
+			existingPolicy:     policyPtr(v1.IPFamilyPolicyPreferDualStack),
+			desiredFamilies:    []v1.IPFamily{v1.IPv4Protocol, v1.IPv6Protocol},
+			desiredPolicy:      policyPtr(v1.IPFamilyPolicyPreferDualStack),
+			expectUpdateCalled: false,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			testK8sService, vms, fc := initTest(testServiceAnnotationPropagationEnabled)
+
+			// Create the initial VMService; IPFamily fields are intentionally absent here
+			// to mirror what an adapter (e.g. v1alpha2) would return when the feature is
+			// not supported by the API version in use.
+			createdVMService, _ := vms.Create(context.Background(), testK8sService, testClustername)
+
+			// Inject the "existing" IPFamily state as if the adapter had read it from
+			// the server (v1alpha6 would populate these via readDualStackFromUnstructured).
+			createdVMService.Spec.IPFamilies = tc.existingFamilies
+			createdVMService.Spec.IPFamilyPolicy = tc.existingPolicy
+
+			// Set the desired IPFamily state on the k8s Service.
+			testK8sService.Spec.IPFamilies = tc.desiredFamilies
+			testK8sService.Spec.IPFamilyPolicy = tc.desiredPolicy
+
+			updateCalled := false
+			fc.PrependReactor("update", "virtualmachineservices", func(clientgotesting.Action) (bool, runtime.Object, error) {
+				updateCalled = true
+				return false, nil, nil // pass through so the fake still handles the write
+			})
+
+			_, err := vms.Update(context.Background(), testK8sService, testClustername, createdVMService)
+			assert.NoError(t, err)
+			assert.Equal(t, tc.expectUpdateCalled, updateCalled,
+				"adapter Update called=%v, want=%v", updateCalled, tc.expectUpdateCalled)
+
+			_ = vms.Delete(context.Background(), testK8sService, testClustername)
+		})
+	}
+}
+
 func TestDeleteVMService(t *testing.T) {
 	testK8sService, vms, _ := initTest(testServiceAnnotationPropagationEnabled)
 	_, _ = vms.Create(context.Background(), testK8sService, testClustername)
