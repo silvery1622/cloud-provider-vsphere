@@ -25,6 +25,7 @@ Version matrix:
 
 | Kubernetes Version | vSphere Cloud Provider Release Version | Cloud Provider Branch |
 |--------------------|----------------------------------------|-----------------------|
+| v1.36.X            | v1.36.X                                | release-1.36          |
 | v1.35.X            | v1.35.X                                | release-1.35          |
 | v1.34.X            | v1.34.X                                | release-1.34          |
 | v1.33.X            | v1.33.X                                | release-1.33          |
