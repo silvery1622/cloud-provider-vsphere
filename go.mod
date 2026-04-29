@@ -4,6 +4,10 @@ go 1.26.0
 
 replace github.com/vmware-tanzu/vm-operator/pkg/constants/testlabels => github.com/vmware-tanzu/vm-operator/pkg/constants/testlabels v1.9.1-0.20260414214322-1fcdef9dd5cc
 
+// Temporary local fork of nsx-operator/pkg/apis pending PR #1418 (IPAddressType, AllocationPrefixLength on IPAddressAllocationSpec).
+// Remove this replace and bump to the merged version once PR #1418 lands.
+replace github.com/vmware-tanzu/nsx-operator/pkg/apis => ./hack/nsx-operator-apis-fork
+
 // vm-operator version: prefer alignment with CAPV https://github.com/kubernetes-sigs/cluster-api-provider-vsphere/blob/main/go.mod#L11
 // (may temporarily diverge when CPI needs a newer api/v1alpha6 commit before CAPV bumps).
 require (
@@ -15,8 +19,8 @@ require (
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.10
 	github.com/stretchr/testify v1.11.1
-	github.com/vmware-tanzu/nsx-operator/pkg/apis v0.0.0-20240827061921-8f0982975508
-	github.com/vmware-tanzu/nsx-operator/pkg/client v0.0.0-20240827061921-8f0982975508
+	github.com/vmware-tanzu/nsx-operator/pkg/apis v0.0.0-20260423081355-beab2417344a
+	github.com/vmware-tanzu/nsx-operator/pkg/client v0.0.0-20260423081355-beab2417344a
 	github.com/vmware-tanzu/vm-operator/api v1.9.1-0.20260414214322-1fcdef9dd5cc
 	github.com/vmware/govmomi v0.53.0
 	github.com/vmware/vsphere-automation-sdk-go/lib v0.7.0
