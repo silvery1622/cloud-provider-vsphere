@@ -38,6 +38,7 @@ import (
 	nsxfake "github.com/vmware-tanzu/nsx-operator/pkg/client/clientset/versioned/fake"
 	nsxinformers "github.com/vmware-tanzu/nsx-operator/pkg/client/informers/externalversions"
 
+	"k8s.io/cloud-provider-vsphere/pkg/cloudprovider/vsphereparavirtual/routemanager/helper"
 	"k8s.io/cloud-provider-vsphere/pkg/util"
 )
 
@@ -132,7 +133,7 @@ func (f *fixture) newController(ctx context.Context) (*Controller, nsxinformers.
 
 	nodeInformer := k8sI.Core().V1().Nodes()
 	ipAddressAllocationInformer := i.Crd().V1alpha1().IPAddressAllocations()
-	c := NewController(ctx, f.kubeclient, nodeInformer.Lister(), nodeInformer.Informer().HasSynced, ipAddressAllocationInformer)
+	c := NewController(ctx, f.kubeclient, nodeInformer.Lister(), nodeInformer.Informer().HasSynced, ipAddressAllocationInformer, false, true)
 
 	c.ipAddressAllocationsSynced = alwaysReady
 	c.nodesSynced = alwaysReady
@@ -302,4 +303,229 @@ func TestPatchNodeCIDRFailed(t *testing.T) {
 	f.expectPatchNodeAction(name, types.StrategicMergePatchType, patch)
 
 	f.runExpectError(ctx, getKey(ipAddressAllocation, t))
+}
+
+// newDualStackController builds a controller with dualStackEnabled=true.
+func (f *fixture) newDualStackController(ctx context.Context, primaryIsIPv4 bool) (*Controller, nsxinformers.SharedInformerFactory, kubeinformers.SharedInformerFactory) {
+	f.client = nsxfake.NewSimpleClientset(f.objects...)
+	f.kubeclient = k8sfake.NewSimpleClientset(f.kubeobjects...)
+
+	i := nsxinformers.NewSharedInformerFactory(f.client, noResyncPeriodFunc())
+	k8sI := kubeinformers.NewSharedInformerFactory(f.kubeclient, noResyncPeriodFunc())
+
+	nodeInformer := k8sI.Core().V1().Nodes()
+	ipAllocationInformer := i.Crd().V1alpha1().IPAddressAllocations()
+	c := NewController(ctx, f.kubeclient, nodeInformer.Lister(), nodeInformer.Informer().HasSynced, ipAllocationInformer, true, primaryIsIPv4)
+	c.ipAddressAllocationsSynced = alwaysReady
+	c.nodesSynced = alwaysReady
+	c.recorder = &record.FakeRecorder{}
+
+	for _, a := range f.ipAddressAllocationsLister {
+		ipAllocationInformer.Informer().GetIndexer().Add(a)
+	}
+	for _, d := range f.nodesLister {
+		nodeInformer.Informer().GetIndexer().Add(d)
+	}
+	return c, i, k8sI
+}
+
+func (f *fixture) runDualStack(ctx context.Context, key string, primaryIsIPv4 bool) {
+	c, i, k8sI := f.newDualStackController(ctx, primaryIsIPv4)
+	i.Start(ctx.Done())
+	k8sI.Start(ctx.Done())
+
+	err := c.syncHandler(ctx, key)
+	if err != nil {
+		f.t.Errorf("error syncing IPAddressAllocation: %v", err)
+	}
+	util.CheckActions(f.actions, filterInformerActions(f.client.Actions()), f.t)
+	util.CheckActions(f.kubeactions, filterInformerActions(f.kubeclient.Actions()), f.t)
+}
+
+func (f *fixture) runDualStackExpectError(ctx context.Context, key string, primaryIsIPv4 bool) {
+	c, i, k8sI := f.newDualStackController(ctx, primaryIsIPv4)
+	i.Start(ctx.Done())
+	k8sI.Start(ctx.Done())
+
+	err := c.syncHandler(ctx, key)
+	if err == nil {
+		f.t.Error("expected error syncing IPAddressAllocation, got nil")
+	}
+	util.CheckActions(f.actions, filterInformerActions(f.client.Actions()), f.t)
+	util.CheckActions(f.kubeactions, filterInformerActions(f.kubeclient.Actions()), f.t)
+}
+
+// TestDualStack_PatchNodeWhenBothPartnersReady verifies that the node is patched
+// with both CIDRs in primary-family-first order when both partner allocations are ready.
+func TestDualStack_PatchNodeWhenBothPartnersReady(t *testing.T) {
+	nodeName := "node-1"
+	ipv4CIDR := "10.244.0.0/24"
+	ipv6CIDR := "fd00::/80"
+	f := newFixture(t)
+	_, ctx := ktesting.NewTestContext(t)
+
+	ipv4Alloc := newIPAddressAllocation(nodeName, vpcapisv1.IPAddressVisibilityPrivate, ipv4CIDR, corev1.ConditionTrue)
+	ipv6Alloc := newIPAddressAllocation(nodeName+helper.SuffixIPv6, vpcapisv1.IPAddressVisibilityPrivate, ipv6CIDR, corev1.ConditionTrue)
+	node := newNode(nodeName, "", nil)
+
+	f.ipAddressAllocationsLister = append(f.ipAddressAllocationsLister, ipv4Alloc, ipv6Alloc)
+	f.objects = append(f.objects, ipv4Alloc, ipv6Alloc)
+	f.nodesLister = append(f.nodesLister, node)
+	f.kubeobjects = append(f.kubeobjects, node)
+
+	// primaryIPFamilyIsIPv4=true → PodCIDRs order: [ipv4, ipv6]
+	patch := []byte(fmt.Sprintf(`{"spec":{"podCIDR":"%s","podCIDRs":["%s","%s"]}}`, ipv4CIDR, ipv4CIDR, ipv6CIDR))
+	f.expectPatchNodeAction(nodeName, types.StrategicMergePatchType, patch)
+
+	f.runDualStack(ctx, getKey(ipv4Alloc, t), true)
+}
+
+// TestDualStack_PatchNodeIPv6Primary verifies that IPv6 is listed first when primaryIPFamilyIsIPv4=false.
+func TestDualStack_PatchNodeIPv6Primary(t *testing.T) {
+	nodeName := "node-1"
+	ipv4CIDR := "10.244.0.0/24"
+	ipv6CIDR := "fd00::/80"
+	f := newFixture(t)
+	_, ctx := ktesting.NewTestContext(t)
+
+	ipv4Alloc := newIPAddressAllocation(nodeName, vpcapisv1.IPAddressVisibilityPrivate, ipv4CIDR, corev1.ConditionTrue)
+	ipv6Alloc := newIPAddressAllocation(nodeName+helper.SuffixIPv6, vpcapisv1.IPAddressVisibilityPrivate, ipv6CIDR, corev1.ConditionTrue)
+	node := newNode(nodeName, "", nil)
+
+	f.ipAddressAllocationsLister = append(f.ipAddressAllocationsLister, ipv4Alloc, ipv6Alloc)
+	f.objects = append(f.objects, ipv4Alloc, ipv6Alloc)
+	f.nodesLister = append(f.nodesLister, node)
+	f.kubeobjects = append(f.kubeobjects, node)
+
+	// primaryIPFamilyIsIPv4=false → PodCIDRs order: [ipv6, ipv4]
+	patch := []byte(fmt.Sprintf(`{"spec":{"podCIDR":"%s","podCIDRs":["%s","%s"]}}`, ipv6CIDR, ipv6CIDR, ipv4CIDR))
+	f.expectPatchNodeAction(nodeName, types.StrategicMergePatchType, patch)
+
+	f.runDualStack(ctx, getKey(ipv6Alloc, t), false)
+}
+
+// TestDualStack_IPv4KeyIPv4Primary exercises the branch: triggered by IPv4 alloc, primary=IPv4
+// → PodCIDRs order [ipv4, ipv6]. This mirrors TestDualStack_PatchNodeWhenBothPartnersReady
+// and is already covered there; kept here as an explicit label for the branch.
+
+// TestDualStack_IPv6KeyIPv4Primary exercises triggered-by-IPv6 alloc with primary=IPv4
+// → PodCIDRs order [ipv4, ipv6] (partner=ipv4 is placed first).
+func TestDualStack_IPv6KeyIPv4Primary(t *testing.T) {
+	nodeName := "node-1"
+	ipv4CIDR := "10.244.0.0/24"
+	ipv6CIDR := "fd00::/80"
+	f := newFixture(t)
+	_, ctx := ktesting.NewTestContext(t)
+
+	ipv4Alloc := newIPAddressAllocation(nodeName, vpcapisv1.IPAddressVisibilityPrivate, ipv4CIDR, corev1.ConditionTrue)
+	ipv6Alloc := newIPAddressAllocation(nodeName+helper.SuffixIPv6, vpcapisv1.IPAddressVisibilityPrivate, ipv6CIDR, corev1.ConditionTrue)
+	node := newNode(nodeName, "", nil)
+
+	f.ipAddressAllocationsLister = append(f.ipAddressAllocationsLister, ipv4Alloc, ipv6Alloc)
+	f.objects = append(f.objects, ipv4Alloc, ipv6Alloc)
+	f.nodesLister = append(f.nodesLister, node)
+	f.kubeobjects = append(f.kubeobjects, node)
+
+	// Triggered by IPv6 alloc, primary=IPv4 → order [ipv4, ipv6]
+	patch := []byte(fmt.Sprintf(`{"spec":{"podCIDR":"%s","podCIDRs":["%s","%s"]}}`, ipv4CIDR, ipv4CIDR, ipv6CIDR))
+	f.expectPatchNodeAction(nodeName, types.StrategicMergePatchType, patch)
+
+	f.runDualStack(ctx, getKey(ipv6Alloc, t), true)
+}
+
+// TestDualStack_IPv4KeyIPv6Primary exercises triggered-by-IPv4 alloc with primary=IPv6
+// → PodCIDRs order [ipv6, ipv4] (partner=ipv6 is placed first).
+func TestDualStack_IPv4KeyIPv6Primary(t *testing.T) {
+	nodeName := "node-1"
+	ipv4CIDR := "10.244.0.0/24"
+	ipv6CIDR := "fd00::/80"
+	f := newFixture(t)
+	_, ctx := ktesting.NewTestContext(t)
+
+	ipv4Alloc := newIPAddressAllocation(nodeName, vpcapisv1.IPAddressVisibilityPrivate, ipv4CIDR, corev1.ConditionTrue)
+	ipv6Alloc := newIPAddressAllocation(nodeName+helper.SuffixIPv6, vpcapisv1.IPAddressVisibilityPrivate, ipv6CIDR, corev1.ConditionTrue)
+	node := newNode(nodeName, "", nil)
+
+	f.ipAddressAllocationsLister = append(f.ipAddressAllocationsLister, ipv4Alloc, ipv6Alloc)
+	f.objects = append(f.objects, ipv4Alloc, ipv6Alloc)
+	f.nodesLister = append(f.nodesLister, node)
+	f.kubeobjects = append(f.kubeobjects, node)
+
+	// Triggered by IPv4 alloc, primary=IPv6 → order [ipv6, ipv4]
+	patch := []byte(fmt.Sprintf(`{"spec":{"podCIDR":"%s","podCIDRs":["%s","%s"]}}`, ipv6CIDR, ipv6CIDR, ipv4CIDR))
+	f.expectPatchNodeAction(nodeName, types.StrategicMergePatchType, patch)
+
+	f.runDualStack(ctx, getKey(ipv4Alloc, t), false)
+}
+
+// TestDualStack_HoldWhenPartnerNotReady verifies that the node is NOT patched when the partner allocation is absent.
+func TestDualStack_HoldWhenPartnerNotReady(t *testing.T) {
+	nodeName := "node-1"
+	ipv4CIDR := "10.244.0.0/24"
+	f := newFixture(t)
+	_, ctx := ktesting.NewTestContext(t)
+
+	ipv4Alloc := newIPAddressAllocation(nodeName, vpcapisv1.IPAddressVisibilityPrivate, ipv4CIDR, corev1.ConditionTrue)
+	node := newNode(nodeName, "", nil)
+
+	f.ipAddressAllocationsLister = append(f.ipAddressAllocationsLister, ipv4Alloc)
+	f.objects = append(f.objects, ipv4Alloc)
+	f.nodesLister = append(f.nodesLister, node)
+	f.kubeobjects = append(f.kubeobjects, node)
+
+	// No patch expected since partner IPv6 allocation doesn't exist yet.
+	f.runDualStackExpectError(ctx, getKey(ipv4Alloc, t), true)
+}
+
+// TestDualStack_HoldWhenPartnerCIDREmpty verifies that the node is NOT patched when the
+// partner allocation exists but has not yet received a CIDR (status not ready).
+func TestDualStack_HoldWhenPartnerCIDREmpty(t *testing.T) {
+	nodeName := "node-1"
+	ipv4CIDR := "10.244.0.0/24"
+	f := newFixture(t)
+	_, ctx := ktesting.NewTestContext(t)
+
+	ipv4Alloc := newIPAddressAllocation(nodeName, vpcapisv1.IPAddressVisibilityPrivate, ipv4CIDR, corev1.ConditionTrue)
+	// IPv6 partner exists but condition is False → no CIDR yet.
+	ipv6AllocNotReady := newIPAddressAllocation(nodeName+helper.SuffixIPv6, vpcapisv1.IPAddressVisibilityPrivate, "", corev1.ConditionFalse)
+	node := newNode(nodeName, "", nil)
+
+	f.ipAddressAllocationsLister = append(f.ipAddressAllocationsLister, ipv4Alloc, ipv6AllocNotReady)
+	f.objects = append(f.objects, ipv4Alloc, ipv6AllocNotReady)
+	f.nodesLister = append(f.nodesLister, node)
+	f.kubeobjects = append(f.kubeobjects, node)
+
+	f.runDualStackExpectError(ctx, getKey(ipv4Alloc, t), true)
+}
+
+// TestHelpers_NodeNameFromCRName and TestHelpers_PartnerCRName cover the naming helpers.
+func TestHelpers_NodeNameFromCRName(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"node-1", "node-1"},
+		{"node-1" + helper.SuffixIPv6, "node-1"},
+		{"my-node" + helper.SuffixIPv6, "my-node"},
+	}
+	for _, tt := range tests {
+		if got := nodeNameFromCRName(tt.input); got != tt.expected {
+			t.Errorf("nodeNameFromCRName(%q) = %q, want %q", tt.input, got, tt.expected)
+		}
+	}
+}
+
+func TestHelpers_PartnerCRName(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"node-1", "node-1" + helper.SuffixIPv6},
+		{"node-1" + helper.SuffixIPv6, "node-1"},
+	}
+	for _, tt := range tests {
+		if got := partnerCRName(tt.input); got != tt.expected {
+			t.Errorf("partnerCRName(%q) = %q, want %q", tt.input, got, tt.expected)
+		}
+	}
 }

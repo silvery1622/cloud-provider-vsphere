@@ -16,6 +16,7 @@ package ipaddressallocation
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	vpcapisv1 "github.com/vmware-tanzu/nsx-operator/pkg/apis/vpc/v1alpha1"
@@ -35,12 +36,13 @@ import (
 	"k8s.io/klog/v2"
 
 	"k8s.io/cloud-provider-vsphere/pkg/cloudprovider/vsphereparavirtual/controllers/routablepod/utils"
+	"k8s.io/cloud-provider-vsphere/pkg/cloudprovider/vsphereparavirtual/routemanager/helper"
 )
 
 const (
-	// controllerAgentName is the string used by this controller to identify
+	// controllerAgentName is the string used by this controller to identify itself in events.
 	controllerAgentName = "ipaddressallocation-controller"
-	// syncPeriod Interval of synchronizing IPAddressAllocation from apiserver
+	// syncPeriod is the interval at which IPAddressAllocation objects are re-synced from the API server.
 	syncPeriod = 30 * time.Second
 )
 
@@ -56,6 +58,11 @@ type Controller struct {
 
 	recorder  record.EventRecorder
 	workqueue workqueue.RateLimitingInterface
+
+	// dualStackEnabled is true when both IPv4 and IPv6 families are expected.
+	dualStackEnabled bool
+	// primaryIPFamilyIsIPv4 controls whether IPv4 or IPv6 is listed first in PodCIDRs.
+	primaryIPFamilyIsIPv4 bool
 }
 
 // NewController returns a Controller that reconciles IPAddressAllocation
@@ -64,7 +71,9 @@ func NewController(
 	kubeclientset kubernetes.Interface,
 	nodesLister listerv1.NodeLister,
 	nodesSynced cache.InformerSynced,
-	ipAddressAllocationInformer vpcinformerv1.IPAddressAllocationInformer) *Controller {
+	ipAddressAllocationInformer vpcinformerv1.IPAddressAllocationInformer,
+	dualStackEnabled bool,
+	primaryIPFamilyIsIPv4 bool) *Controller {
 	logger := klog.FromContext(ctx)
 
 	// Create event broadcaster
@@ -85,6 +94,8 @@ func NewController(
 		workqueue: workqueue.NewRateLimitingQueueWithConfig(workqueue.DefaultControllerRateLimiter(), workqueue.RateLimitingQueueConfig{
 			Name: "IPAddressAllocations",
 		}),
+		dualStackEnabled:      dualStackEnabled,
+		primaryIPFamilyIsIPv4: primaryIPFamilyIsIPv4,
 	}
 
 	logger.Info("Setting up event handlers")
@@ -247,27 +258,85 @@ func (c *Controller) syncHandler(ctx context.Context, key string) error {
 	return c.processIPAddressAllocationCreateOrUpdate(ctx, ipAddressAllocation)
 }
 
-// processIPAddressAllocationCreateOrUpdate will get CIDR from the IPAddressAllocation status and update it to the
-// PodCIDR of the same name Node.
-func (c *Controller) processIPAddressAllocationCreateOrUpdate(ctx context.Context, ipAddressAllocation *vpcapisv1.IPAddressAllocation) error {
+// nodeNameFromCRName derives the Kubernetes Node name from an IPAddressAllocation CR name
+// by stripping the helper.SuffixIPv6 ("-ipv6") suffix when present.
+func nodeNameFromCRName(crName string) string {
+	return strings.TrimSuffix(crName, helper.SuffixIPv6)
+}
 
-	var podCIDR string
-	for _, condition := range ipAddressAllocation.Status.Conditions {
-		if condition.Type == vpcapisv1.Ready {
-			if condition.Status != corev1.ConditionTrue {
-				return fmt.Errorf("IPAddressAllocation %v is not ready", ipAddressAllocation.Name)
-			}
-			podCIDR = ipAddressAllocation.Status.AllocationIPs
+// partnerCRName returns the CR name of the other IP family for a given CR name.
+// An IPv4 bare name maps to the IPv6 name (bare + helper.SuffixIPv6), and vice versa.
+func partnerCRName(crName string) string {
+	if strings.HasSuffix(crName, helper.SuffixIPv6) {
+		return strings.TrimSuffix(crName, helper.SuffixIPv6)
+	}
+	return crName + helper.SuffixIPv6
+}
+
+// allocationIP returns the allocated CIDR from the IPAddressAllocation status,
+// or an empty string if not yet ready.
+func allocationIP(alloc *vpcapisv1.IPAddressAllocation) string {
+	for _, condition := range alloc.Status.Conditions {
+		if condition.Type == vpcapisv1.Ready && condition.Status == corev1.ConditionTrue {
+			return alloc.Status.AllocationIPs
 		}
 	}
-	if podCIDR == "" {
-		return fmt.Errorf("IPAddressAllocation %v does not get CIDR allocated", ipAddressAllocation.Name)
+	return ""
+}
+
+// processIPAddressAllocationCreateOrUpdate gets the CIDR from the IPAddressAllocation status
+// and patches it to the matching Node's PodCIDRs.
+//
+// In dual stack mode it waits for both the IPv4 and IPv6 partner allocation to be ready
+// before performing a single atomic patch with both CIDRs ordered by primaryIPFamilyIsIPv4.
+func (c *Controller) processIPAddressAllocationCreateOrUpdate(ctx context.Context, ipAddressAllocation *vpcapisv1.IPAddressAllocation) error {
+	nodeName := nodeNameFromCRName(ipAddressAllocation.Name)
+
+	thisCIDR := allocationIP(ipAddressAllocation)
+	if thisCIDR == "" {
+		return fmt.Errorf("IPAddressAllocation %v does not have an allocated CIDR yet", ipAddressAllocation.Name)
 	}
-	node, err := c.nodesLister.Get(ipAddressAllocation.Name)
+
+	node, err := c.nodesLister.Get(nodeName)
 	if err != nil {
 		return err
 	}
 
-	// update node with allocated podCIDR
-	return utils.PatchNodeCIDRWithRetry(ctx, c.kubeclientset, node, podCIDR, c.recorder)
+	if !c.dualStackEnabled {
+		return utils.PatchNodeCIDRWithRetry(ctx, c.kubeclientset, node, []string{thisCIDR}, c.recorder)
+	}
+
+	// Dual stack: look up the partner allocation; both must be ready before patching.
+	partnerName := partnerCRName(ipAddressAllocation.Name)
+	partner, err := c.ipAddressAllocationsLister.IPAddressAllocations(ipAddressAllocation.Namespace).Get(partnerName)
+	if err != nil {
+		if errors.IsNotFound(err) {
+			klog.V(4).Infof("Partner IPAddressAllocation %s not found yet, waiting", partnerName)
+			return fmt.Errorf("partner IPAddressAllocation %s not ready yet", partnerName)
+		}
+		return err
+	}
+	partnerCIDR := allocationIP(partner)
+	if partnerCIDR == "" {
+		return fmt.Errorf("partner IPAddressAllocation %s does not have an allocated CIDR yet", partnerName)
+	}
+
+	// Order CIDRs according to the cluster's primary IP family.
+	thisIsIPv4 := !strings.HasSuffix(ipAddressAllocation.Name, helper.SuffixIPv6)
+	var cidrs []string
+	if c.primaryIPFamilyIsIPv4 {
+		if thisIsIPv4 {
+			cidrs = []string{thisCIDR, partnerCIDR}
+		} else {
+			cidrs = []string{partnerCIDR, thisCIDR}
+		}
+	} else {
+		if thisIsIPv4 {
+			cidrs = []string{partnerCIDR, thisCIDR}
+		} else {
+			cidrs = []string{thisCIDR, partnerCIDR}
+		}
+	}
+
+	return utils.PatchNodeCIDRWithRetry(ctx, c.kubeclientset, node, cidrs, c.recorder)
 }

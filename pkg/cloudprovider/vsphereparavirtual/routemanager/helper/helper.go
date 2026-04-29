@@ -1,3 +1,19 @@
+/*
+Copyright 2026 The Kubernetes Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package helper
 
 import (
@@ -8,7 +24,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// A list of possible RouteSet or StaticRoute operation error messages
+// Sentinel errors for RouteSet and StaticRoute CRUD operations.
+// Callers wrap these with fmt.Errorf or errors.Wrap to attach the underlying cause.
 var (
 	ErrGetRouteCR    = errors.New("failed to get Route CR")
 	ErrCreateRouteCR = errors.New("failed to create Route CR")
@@ -23,7 +40,16 @@ const (
 	RealizedStateTimeout = 10 * time.Second
 	// RealizedStateSleepTime is the interval between realized state check
 	RealizedStateSleepTime = 1 * time.Second
+	// SuffixIPv6 is appended to CR names that carry IPv6 routes or address allocations.
+	// IPv4 CRs keep the bare node name for backward compatibility.
+	SuffixIPv6 = "-ipv6"
 )
+
+// StripFamilySuffix removes the SuffixIPv6 suffix from a CR name to recover the bare node name.
+// For IPv4 CRs that never carry the suffix this is a no-op.
+func StripFamilySuffix(name string) string {
+	return strings.TrimSuffix(name, SuffixIPv6)
+}
 
 // RouteCR defines an interface that is used to represent different kinds of nsx.vmware.com route CR
 type RouteCR interface{}

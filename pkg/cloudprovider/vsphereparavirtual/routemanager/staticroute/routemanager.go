@@ -62,8 +62,9 @@ func (sr *RouteManager) CreateCPRoutes(staticroutes helper.RouteCRList) ([]*clou
 		// only return cloudprovider.RouteInfo if RouteSet CR status 'Ready' is true
 		condition := GetRouteCRCondition(&(staticroute.Status), vpcapisv1.Ready)
 		if condition != nil && condition.Status == v1.ConditionTrue {
-			// one RouteSet per node, so we can use nodeName as the name of RouteSet CR
-			nodeName := staticroute.Name
+			// Strip the "-ipv6" suffix to recover the bare node name so the upstream
+			// route reconciler can map this CR back to the correct Node object.
+			nodeName := helper.StripFamilySuffix(staticroute.Name)
 			cpRoute := &cloudprovider.Route{
 				Name:            staticroute.Name,
 				TargetNode:      types.NodeName(nodeName),

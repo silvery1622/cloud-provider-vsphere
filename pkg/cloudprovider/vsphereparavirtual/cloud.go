@@ -75,6 +75,15 @@ var (
 	// clusterIPFamily is the raw --cluster-ip-family flag; Initialize resolves it
 	// with ParseClusterIPFamily to one of: ipv4, ipv6, ipv4ipv6, or ipv6ipv4.
 	clusterIPFamily string
+
+	// IPv4Enabled is true when the cluster carries an IPv4 family (derived from clusterIPFamily).
+	IPv4Enabled bool
+	// IPv6Enabled is true when the cluster carries an IPv6 family (derived from clusterIPFamily).
+	IPv6Enabled bool
+	// PrimaryIPFamilyIsIPv4 is true when IPv4 is the primary (first) family in clusterIPFamily.
+	PrimaryIPFamilyIsIPv4 bool
+	// DualStackEnabled is true when both IPv4 and IPv6 are enabled.
+	DualStackEnabled bool
 )
 
 func init() {
@@ -105,15 +114,18 @@ func init() {
 	flag.BoolVar(&serviceAnnotationPropagationEnabled, "enable-service-annotation-propagation", false, "If true, will propagate the service annotation to resource in supervisor cluster.")
 	flag.StringVar(&vmopAPIVersion, "vm-operator-api-version", factory.V1alpha2, "the API version to use when communicating with VM Operator in supervisor mode. Valid values are: "+factory.V1alpha2+", "+factory.V1alpha5+", "+factory.V1alpha6)
 	flag.StringVar(&clusterIPFamily, "cluster-ip-family", ClusterIPFamilyIPv4,
-		"Cluster IP family policy for node address ordering and compatibility checks. "+
-			"Controls the order of NodeInternalIP entries reported to the API server. "+
+		"Cluster IP family policy. Shared by Node IP Report (NodeInternalIP ordering) and Routable Pods "+
+			"(IPAddressAllocation and StaticRoute per-family naming). The Addon framework sets this flag from "+
+			"the cluster network CIDRs, providing a single source of truth for both features. "+
 			"Valid values (case-insensitive): "+ClusterIPFamilyIPv4+" (default), "+ClusterIPFamilyIPv6+", "+
 			ClusterIPFamilyIPv4IPv6+" (dual-stack, IPv4 first), "+ClusterIPFamilyIPv6IPv4+" (dual-stack, IPv6 first). "+
 			ClusterIPFamilyIPv6+", "+ClusterIPFamilyIPv4IPv6+", and "+ClusterIPFamilyIPv6IPv4+" require "+
-			"--vm-operator-api-version >= "+factory.V1alpha6+" (dual-stack VirtualMachineService fields).")
+			"--vm-operator-api-version >= "+factory.V1alpha6+" (dual-stack VirtualMachineService fields). "+
+			ClusterIPFamilyIPv6+", "+ClusterIPFamilyIPv4IPv6+", and "+ClusterIPFamilyIPv6IPv4+" also require "+
+			"--enable-vpc-mode=true for Routable Pods (dual/IPv6 routing is not supported on legacy T1 mode).")
 }
 
-// Creates new Controller node interface and returns
+// newVSphereParavirtual creates a new VSphereParavirtual cloud provider from the given config.
 func newVSphereParavirtual(cfg *cpcfg.Config) (*VSphereParavirtual, error) {
 	cp := &VSphereParavirtual{
 		cfg: cfg,
@@ -162,6 +174,29 @@ func (cp *VSphereParavirtual) Initialize(clientBuilder cloudprovider.ControllerC
 	if err := validateIPFamilyConfig(resolvedClusterIPFamily, vmopAPIVersion); err != nil {
 		klog.Fatalf("Invalid flag combination: %v", err)
 	}
+
+	// Derive IP family booleans used by Routable Pods controllers.
+	// --cluster-ip-family is parsed once here and shared with Node IP Report; the Addon
+	// framework sets it from the cluster network CIDRs so there is a single source of truth.
+	IPv4Enabled = resolvedClusterIPFamily == ClusterIPFamilyIPv4 ||
+		resolvedClusterIPFamily == ClusterIPFamilyIPv4IPv6 ||
+		resolvedClusterIPFamily == ClusterIPFamilyIPv6IPv4
+	IPv6Enabled = resolvedClusterIPFamily == ClusterIPFamilyIPv6 ||
+		resolvedClusterIPFamily == ClusterIPFamilyIPv4IPv6 ||
+		resolvedClusterIPFamily == ClusterIPFamilyIPv6IPv4
+	PrimaryIPFamilyIsIPv4 = resolvedClusterIPFamily == ClusterIPFamilyIPv4 ||
+		resolvedClusterIPFamily == ClusterIPFamilyIPv4IPv6
+	DualStackEnabled = IPv4Enabled && IPv6Enabled
+	klog.Infof("IP family config: ipv4Enabled=%v ipv6Enabled=%v dualStack=%v primaryIsIPv4=%v",
+		IPv4Enabled, IPv6Enabled, DualStackEnabled, PrimaryIPFamilyIsIPv4)
+
+	// IPv6 (including dual stack) Routable Pods requires VPC mode; T1 networking does not
+	// support per-family IPAddressAllocation or StaticRoute CRs.
+	// This guard is scoped to RouteEnabled: IPv6 Node IP Report and Load Balancer do not
+	// depend on VPC mode and must continue to work when route controllers are disabled.
+	if RouteEnabled && IPv6Enabled && !vpcModeEnabled {
+		klog.Fatalf("--cluster-ip-family=%s with route controller enabled requires --enable-vpc-mode=true: IPv6 and dual stack routable pods are not supported on the legacy T1 networking mode", resolvedClusterIPFamily)
+	}
 	klog.Infof("Using VM Operator API version: %s", vmopAPIVersion)
 	vmopClient, err := factory.NewAdapter(vmopAPIVersion, kcfg)
 	if err != nil {
@@ -190,7 +225,7 @@ func (cp *VSphereParavirtual) Initialize(clientBuilder cloudprovider.ControllerC
 	if RouteEnabled {
 		klog.V(0).Info("Starting routable pod controllers")
 
-		if err := routablepod.StartControllers(kcfg, client, cp.informMgr, ClusterName, clusterNS, ownerRef, vpcModeEnabled, podIPPoolType); err != nil {
+		if err := routablepod.StartControllers(kcfg, client, cp.informMgr, ClusterName, clusterNS, ownerRef, vpcModeEnabled, podIPPoolType, IPv4Enabled, IPv6Enabled, PrimaryIPFamilyIsIPv4); err != nil {
 			klog.Errorf("Failed to start Routable pod controllers: %v", err)
 		}
 	}
