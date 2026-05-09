@@ -160,9 +160,14 @@ func (cp *VSphereParavirtual) Initialize(clientBuilder cloudprovider.ControllerC
 		klog.Fatalf("Invalid flag combination: %v", err)
 	}
 
+	ipv4Enabled := resolvedClusterIPFamily == ClusterIPFamilyIPv4 ||
+		resolvedClusterIPFamily == ClusterIPFamilyIPv4IPv6 ||
+		resolvedClusterIPFamily == ClusterIPFamilyIPv6IPv4
 	ipv6Enabled := resolvedClusterIPFamily == ClusterIPFamilyIPv6 ||
 		resolvedClusterIPFamily == ClusterIPFamilyIPv4IPv6 ||
 		resolvedClusterIPFamily == ClusterIPFamilyIPv6IPv4
+	primaryIPFamilyIsIPv4 := resolvedClusterIPFamily == ClusterIPFamilyIPv4 ||
+		resolvedClusterIPFamily == ClusterIPFamilyIPv4IPv6
 
 	// IPv6 (including dual stack) Routable Pods requires VPC mode; T1 networking does not
 	// support per-family IPAddressAllocation or StaticRoute CRs.
@@ -199,7 +204,7 @@ func (cp *VSphereParavirtual) Initialize(clientBuilder cloudprovider.ControllerC
 	if RouteEnabled {
 		klog.V(0).Info("Starting routable pod controllers")
 
-		if err := routablepod.StartControllers(kcfg, client, cp.informMgr, ClusterName, clusterNS, ownerRef, vpcModeEnabled, podIPPoolType); err != nil {
+		if err := routablepod.StartControllers(kcfg, client, cp.informMgr, ClusterName, clusterNS, ownerRef, vpcModeEnabled, podIPPoolType, ipv4Enabled, ipv6Enabled, primaryIPFamilyIsIPv4); err != nil {
 			klog.Errorf("Failed to start Routable pod controllers: %v", err)
 		}
 	}

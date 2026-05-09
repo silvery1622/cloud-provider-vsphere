@@ -231,3 +231,7 @@ func (r *routesProvider) getNodeIPAddress(nodeName string, isIPv4 bool) (string,
 	}
 	return "", fmt.Errorf("node %s does not have any %s address (available IPs: %v)", nodeName, ipFamily, availableIPs)
 }
+
+// TODO(danqing.hou): getAllNodeIPAddresses will be used by the dual-stack
+// route programming path (NSX-T route entries per IP family). Add it back
+// when that caller is implemented.
