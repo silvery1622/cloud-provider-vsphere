@@ -17,6 +17,7 @@ limitations under the License.
 package vsphere
 
 import (
+	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -59,10 +60,20 @@ const (
 var (
 	logoutCh chan struct{}
 	logoutWG sync.WaitGroup
+
+	// relaxedIPValidation is set by --relaxed-ip-validation. When true,
+	// DiscoverNode logs a warning and continues when an IP family is not found
+	// in vCenter's Guest Info API rather than returning an error. This is
+	// needed in VKR environments where VMware Tools does not populate guest.Net.
+	relaxedIPValidation bool
 )
 
 func init() {
 	logoutCh = make(chan struct{})
+	flag.BoolVar(&relaxedIPValidation, "relaxed-ip-validation", false,
+		"If true, the cloud provider logs warnings instead of failing when an IP family "+
+			"cannot be discovered from vCenter's Guest Info API. Use this in environments "+
+			"where VMware Tools does not report network interface details via guest.Net.")
 	cloudprovider.RegisterCloudProvider(RegisteredProviderName, func(config io.Reader) (cloudprovider.Interface, error) {
 		byConfig, err := io.ReadAll(config)
 		if err != nil {
@@ -230,7 +241,11 @@ func (vs *VSphere) HasClusterID() bool {
 
 // Initializes vSphere from vSphere CloudProvider Configuration
 func buildVSphereFromConfig(cfg *ccfg.CPIConfig, nsxtcfg *ncfg.Config, lbcfg *lcfg.LBConfig, routecfg *rcfg.Config) (*VSphere, error) {
-	nm := newNodeManager(cfg, nil)
+	var nmOpts []nodeManagerOption
+	if relaxedIPValidation {
+		nmOpts = []nodeManagerOption{withRelaxedIPValidation()}
+	}
+	nm := newNodeManager(cfg, nil, nmOpts...)
 
 	ncm, err := nsxt.NewConnectorManager(nsxtcfg)
 	if err != nil {

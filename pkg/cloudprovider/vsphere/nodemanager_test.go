@@ -2211,6 +2211,111 @@ network:
 		addresses)
 }
 
+func TestRelaxedIPValidationEmptyGuestNet(t *testing.T) {
+	cfg, ok := configFromEnvOrSim(true)
+	defer ok()
+
+	connMgr := cm.NewConnectionManager(&cfg.Config, nil, nil)
+	defer connMgr.Logout()
+
+	err := connMgr.Connect(context.Background(), connMgr.VsphereInstanceMap[cfg.Global.VCenterIP])
+	if err != nil {
+		t.Fatalf("Failed to Connect to vSphere: %s", err)
+	}
+
+	vm := cfg.Map.Any("VirtualMachine").(*simulator.VirtualMachine)
+	vm.Guest.HostName = strings.ToLower(vm.Name)
+	vm.Guest.Net = nil // simulate VMware Tools not reporting guest.Net
+
+	t.Run("strict mode returns error when guest.Net is empty", func(t *testing.T) {
+		nm := newNodeManager(nil, connMgr)
+		err := nm.DiscoverNode(vm.Name, cm.FindVMByName)
+		if err == nil {
+			t.Error("expected an error when guest.Net is empty in strict mode, but got nil")
+		}
+	})
+
+	t.Run("relaxed mode continues when guest.Net is empty", func(t *testing.T) {
+		nm := newNodeManager(nil, connMgr, withRelaxedIPValidation())
+		err := nm.DiscoverNode(vm.Name, cm.FindVMByName)
+		if err != nil {
+			t.Errorf("expected no error in relaxed mode when guest.Net is empty, got: %v", err)
+		}
+		if len(nm.nodeNameMap) != 1 {
+			t.Errorf("expected node to be registered in relaxed mode, nodeNameMap length = %d", len(nm.nodeNameMap))
+		}
+		// Contract: node is registered with only a hostname address and zero IP addresses.
+		nodeInfo := nm.nodeNameMap[strings.ToLower(vm.Name)]
+		for _, addr := range nodeInfo.NodeAddresses {
+			if addr.Type == v1.NodeInternalIP || addr.Type == v1.NodeExternalIP {
+				t.Errorf("expected no IP addresses in relaxed mode when guest.Net is empty, got %v", addr)
+			}
+		}
+	})
+}
+
+func TestRelaxedIPValidationLocalhostOnlyIPs(t *testing.T) {
+	cfg, ok := configFromEnvOrSim(true)
+	defer ok()
+
+	connMgr := cm.NewConnectionManager(&cfg.Config, nil, nil)
+	defer connMgr.Logout()
+
+	err := connMgr.Connect(context.Background(), connMgr.VsphereInstanceMap[cfg.Global.VCenterIP])
+	if err != nil {
+		t.Fatalf("Failed to Connect to vSphere: %s", err)
+	}
+
+	vm := cfg.Map.Any("VirtualMachine").(*simulator.VirtualMachine)
+	vm.Guest.HostName = strings.ToLower(vm.Name)
+	// guest.Net is non-empty but contains only loopback addresses; after
+	// excludeLocalhostIPs filtering, nonLocalhostIPs will be empty.
+	vm.Guest.Net = []vimtypes.GuestNicInfo{
+		{
+			Network:   "loopback-net",
+			IpAddress: []string{"127.0.0.1"},
+		},
+	}
+
+	t.Run("strict mode returns error when all IPs are loopback", func(t *testing.T) {
+		nm := newNodeManager(nil, connMgr)
+		err := nm.DiscoverNode(vm.Name, cm.FindVMByName)
+		if err == nil {
+			t.Error("expected an error when all IPs are loopback in strict mode, but got nil")
+		}
+	})
+
+	t.Run("relaxed mode continues when all IPs are loopback", func(t *testing.T) {
+		nm := newNodeManager(nil, connMgr, withRelaxedIPValidation())
+		err := nm.DiscoverNode(vm.Name, cm.FindVMByName)
+		if err != nil {
+			t.Errorf("expected no error in relaxed mode when all IPs are loopback, got: %v", err)
+		}
+		if len(nm.nodeNameMap) != 1 {
+			t.Errorf("expected node to be registered in relaxed mode, nodeNameMap length = %d", len(nm.nodeNameMap))
+		}
+		// Contract: node is registered with only a hostname address and zero IP addresses.
+		nodeInfo := nm.nodeNameMap[strings.ToLower(vm.Name)]
+		for _, addr := range nodeInfo.NodeAddresses {
+			if addr.Type == v1.NodeInternalIP || addr.Type == v1.NodeExternalIP {
+				t.Errorf("expected no routable IP addresses in relaxed mode when all IPs are loopback, got %v", addr)
+			}
+		}
+	})
+}
+
+func TestWithRelaxedIPValidationOption(t *testing.T) {
+	nm := newNodeManager(nil, nil)
+	if nm.relaxedIPValidation {
+		t.Error("relaxedIPValidation should be false by default")
+	}
+
+	nm = newNodeManager(nil, nil, withRelaxedIPValidation())
+	if !nm.relaxedIPValidation {
+		t.Error("relaxedIPValidation should be true after withRelaxedIPValidation option")
+	}
+}
+
 func guestInfoEncodedNetconfigWithAddresses(encoding, addresses string) string {
 	var (
 		networkConfig = []byte(fmt.Sprintf(`version: 2

@@ -19,6 +19,7 @@ package vsphereparavirtual
 import (
 	"context"
 	"errors"
+	"net"
 	"strings"
 	"time"
 
@@ -33,8 +34,9 @@ import (
 )
 
 type instances struct {
-	vmClient  vmop.Interface
-	namespace string
+	vmClient        vmop.Interface
+	namespace       string
+	clusterIPFamily string
 }
 
 // Compile-time assertion that instances implements cloudprovider.Instances.
@@ -60,6 +62,7 @@ var (
 	errBiosUUIDEmpty = errors.New("discovered Bios UUID is empty")
 )
 
+// checkError returns true if err is not nil.
 func checkError(err error) bool {
 	return err != nil
 }
@@ -76,35 +79,115 @@ func (i instances) discoverNodeByName(ctx context.Context, name types.NodeName) 
 	return discoverNodeByName(ctx, name, i.namespace, i.vmClient)
 }
 
-// NewInstances returns an implementation of cloudprovider.Instances
-func NewInstances(clusterNS string, vmClient vmop.Interface) (cloudprovider.Instances, error) {
+// NewInstances returns an implementation of cloudprovider.Instances.
+// clusterIPFamily must be a canonical value from ParseClusterIPFamily:
+// ClusterIPFamilyIPv4, ClusterIPFamilyIPv6, ClusterIPFamilyIPv4IPv6, or
+// ClusterIPFamilyIPv6IPv4. It controls the ordering of NodeInternalIP addresses
+// so the API server's first address matches the cluster's intended stack.
+func NewInstances(clusterNS string, vmClient vmop.Interface, clusterIPFamily string) (cloudprovider.Instances, error) {
 	return &instances{
-		vmClient:  vmClient,
-		namespace: clusterNS,
+		vmClient:        vmClient,
+		namespace:       clusterNS,
+		clusterIPFamily: clusterIPFamily,
 	}, nil
 }
 
-func createNodeAddresses(vm *vmoptypes.VirtualMachineInfo) []v1.NodeAddress {
-	if vm.PrimaryIP4 == "" && vm.PrimaryIP6 == "" {
+// isLinkLocalIP reports whether the given IP string is a link-local address.
+// Uses net.IP.IsLinkLocalUnicast() to correctly handle all RFC-4291 IPv6
+// link-local addresses (fe80::/10) and RFC-3927 IPv4 link-local addresses
+// (169.254.0.0/16) regardless of case or representation.
+func isLinkLocalIP(ip string) bool {
+	parsed := net.ParseIP(ip)
+	return parsed != nil && parsed.IsLinkLocalUnicast()
+}
+
+// createNodeAddresses builds the list of NodeAddresses for a VM.
+// clusterIPFamily must be canonical (see ParseClusterIPFamily). For
+// ClusterIPFamilyIPv6 and ClusterIPFamilyIPv6IPv4, IPv6 is listed before IPv4;
+// for ClusterIPFamilyIPv4 and ClusterIPFamilyIPv4IPv6, IPv4 is listed before IPv6.
+// Both primary IPs are reported when present to support dual-stack registration.
+func createNodeAddresses(vm *vmoptypes.VirtualMachineInfo, clusterIPFamily string) []v1.NodeAddress {
+	if vm.PrimaryIP4 == "" && vm.PrimaryIP6 == "" && len(vm.NetworkInterfaceAddresses) == 0 {
 		klog.V(4).Info("instance found, but no address yet")
 		return []v1.NodeAddress{}
 	}
 
-	address := vm.PrimaryIP4
-	if address == "" {
-		address = vm.PrimaryIP6
+	var nodeAddresses []v1.NodeAddress
+	addedIPs := make(map[string]bool)
+
+	// Append primary IPs in cluster-preference order so the API server's first
+	// address matches the cluster's intended IP family.
+	ipv6First := false
+	switch clusterIPFamily {
+	case ClusterIPFamilyIPv6, ClusterIPFamilyIPv6IPv4:
+		ipv6First = true
+	case ClusterIPFamilyIPv4, ClusterIPFamilyIPv4IPv6:
+		ipv6First = false
+	default:
+		// Invariant: callers after Initialize pass ParseClusterIPFamily output only.
+		// Log at default verbosity to avoid tripping ERROR-level monitoring on internal misuse.
+		klog.V(0).Infof("createNodeAddresses: unexpected clusterIPFamily %q; using IPv4-first ordering (must be from ParseClusterIPFamily)", clusterIPFamily)
+		ipv6First = false
+	}
+	if ipv6First {
+		if vm.PrimaryIP6 != "" {
+			nodeAddresses = append(nodeAddresses, v1.NodeAddress{
+				Type:    v1.NodeInternalIP,
+				Address: vm.PrimaryIP6,
+			})
+			addedIPs[vm.PrimaryIP6] = true
+		}
+		if vm.PrimaryIP4 != "" {
+			nodeAddresses = append(nodeAddresses, v1.NodeAddress{
+				Type:    v1.NodeInternalIP,
+				Address: vm.PrimaryIP4,
+			})
+			addedIPs[vm.PrimaryIP4] = true
+		}
+	} else {
+		if vm.PrimaryIP4 != "" {
+			nodeAddresses = append(nodeAddresses, v1.NodeAddress{
+				Type:    v1.NodeInternalIP,
+				Address: vm.PrimaryIP4,
+			})
+			addedIPs[vm.PrimaryIP4] = true
+		}
+		if vm.PrimaryIP6 != "" {
+			nodeAddresses = append(nodeAddresses, v1.NodeAddress{
+				Type:    v1.NodeInternalIP,
+				Address: vm.PrimaryIP6,
+			})
+			addedIPs[vm.PrimaryIP6] = true
+		}
 	}
 
-	return []v1.NodeAddress{
-		{
+	for _, ip := range vm.NetworkInterfaceAddresses {
+		if addedIPs[ip] {
+			continue
+		}
+		if isLinkLocalIP(ip) {
+			klog.V(6).Infof("Skipping link-local address: %s", ip)
+			continue
+		}
+		nodeAddresses = append(nodeAddresses, v1.NodeAddress{
 			Type:    v1.NodeInternalIP,
-			Address: address,
-		},
-		{
-			Type:    v1.NodeHostName,
-			Address: "",
-		},
+			Address: ip,
+		})
+		addedIPs[ip] = true
 	}
+
+	nodeAddresses = append(nodeAddresses, v1.NodeAddress{
+		Type:    v1.NodeHostName,
+		Address: vm.Name,
+	})
+
+	if len(nodeAddresses) > 1 {
+		klog.V(2).Infof("VM %s: Reporting %d IP address(es) to API server", vm.Name, len(nodeAddresses)-1)
+	} else {
+		klog.Warningf("VM %s: No IP addresses found in network status", vm.Name)
+	}
+
+	return nodeAddresses
 }
 
 // NodeAddresses returns the addresses of the specified instance if one exists, otherwise nil
@@ -121,7 +204,7 @@ func (i *instances) NodeAddresses(ctx context.Context, name types.NodeName) ([]v
 		klog.V(4).Info("instances.NodeAddresses() InstanceNotFound ", name)
 		return nil, cloudprovider.InstanceNotFound
 	}
-	return createNodeAddresses(vm), err
+	return createNodeAddresses(vm, i.clusterIPFamily), err
 }
 
 // NodeAddressesByProviderID returns the addresses of the specified instance if one exists, otherwise nil
@@ -138,7 +221,7 @@ func (i *instances) NodeAddressesByProviderID(ctx context.Context, providerID st
 		klog.V(4).Info("instances.NodeAddressesByProviderID() InstanceNotFound ", providerID)
 		return nil, cloudprovider.InstanceNotFound
 	}
-	return createNodeAddresses(vm), nil
+	return createNodeAddresses(vm, i.clusterIPFamily), nil
 }
 
 // InstanceID returns the cloud provider ID of the named instance if one exists, otherwise an empty string
