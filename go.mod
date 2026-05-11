@@ -6,7 +6,7 @@ replace github.com/vmware-tanzu/vm-operator/pkg/constants/testlabels => github.c
 
 // vm-operator version is aligned with CAPV https://github.com/kubernetes-sigs/cluster-api-provider-vsphere/blob/main/go.mod#L11
 require (
-	github.com/fsnotify/fsnotify v1.9.0
+	github.com/fsnotify/fsnotify v1.10.1
 	github.com/golang/mock v1.6.0
 	github.com/google/uuid v1.6.0
 	github.com/pkg/errors v0.9.1
