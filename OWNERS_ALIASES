@@ -2,8 +2,10 @@
 
 aliases:
   sig-cloud-provider-leads:
-    - andrewsykim
+    - bridgetkromhout
     - cheftako
+    - elmiko
+    - joelspeed
   cloud-provider-vsphere-maintainers:
     - andrewsykim
     - divyenpatel
