@@ -334,6 +334,12 @@ func (s *vmService) Update(ctx context.Context, service *v1.Service, clusterName
 	}
 
 	if needsUpdate {
+		if !s.serviceIPFamilyFieldsEnabled {
+			// Preserve fields already stored by an earlier CPI. Gate-off affects
+			// fields on new objects, but must not remove them during unrelated updates.
+			desiredIPFams = cloneIPFamilies(existing.Spec.IPFamilies)
+			servicePolicy = cloneIPFamilyPolicy(existing.Spec.IPFamilyPolicy)
+		}
 		update := &vmoptypes.VirtualMachineServiceInfo{
 			Annotations: annotations,
 			Spec: vmoptypes.VirtualMachineServiceSpec{
